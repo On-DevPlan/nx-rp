@@ -8,11 +8,13 @@
 
 存储：`~/.nx-rp/store.json`（全局），按 cwd 自动隔离 scope。
 
+GitHub: https://github.com/On-DevPlan/nx-rp
+
 ## 快速开始
 
 ```bash
 npm install -g nx-rp        # 或 pnpm add -g
-nx-rp serve                 # 打开 http://127.0.0.1:7820
+npx nx-rp serve             # 打开 http://127.0.0.1:7820
 nx-rp skill install         # 把内置 skill 装到 ~/.claude/skills
 nx-rp routes                # 看 CLI ↔ Web 路由对照
 ```

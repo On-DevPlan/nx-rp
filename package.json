@@ -23,11 +23,11 @@
   "packageManager": "pnpm@10.33.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ZHLX2005/nx-rp.git"
+    "url": "https://github.com/On-DevPlan/nx-rp.git"
   },
-  "homepage": "https://github.com/ZHLX2005/nx-rp#readme",
+  "homepage": "https://github.com/On-DevPlan/nx-rp#readme",
   "bugs": {
-    "url": "https://github.com/ZHLX2005/nx-rp/issues"
+    "url": "https://github.com/On-DevPlan/nx-rp/issues"
   },
   "engines": {
     "node": ">=18.17"
