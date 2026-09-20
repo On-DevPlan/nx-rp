@@ -76,6 +76,30 @@ export default {
       run: async (ctx) => service.removeWorkflow(ctx.name),
       render: (r) => `已删除: ${r.name}`,
     },
+    // 给 Web 端用：浏览器不能 fs，直接传源码过来
+    {
+      id: 'workflow.write',
+      cli: null,
+      http: ['POST', '/api/workflows/write'],
+      summary: '保存工作流源码（HTTP body = {name, body}，写到 cwd + 同步 store）',
+      flags: {
+        name: { type: 'string', required: true },
+        body: { type: 'string', required: true },
+      },
+      run: async (ctx) => {
+        const file = await service.writeWorkflow(ctx.name, ctx.body);
+        return { name: ctx.name, file };
+      },
+      render: (r) => `已保存: ${r.name}  → ${r.file}`,
+    },
+    {
+      id: 'workflow.source',
+      cli: null,
+      http: ['GET', '/api/workflows/:name/source'],
+      summary: '读工作流源码（HTTP 端给 Web 加载用）',
+      args: ['name'],
+      run: (ctx) => service.readWorkflowSource(ctx.name),
+    },
     // ─── 文件命令（agent 编辑工作流的核心接口） ─────────────────────
     {
       id: 'workflow.validate',

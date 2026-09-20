@@ -94,6 +94,7 @@ test('listWorkflows + saveWorkflow + removeWorkflow: 完整 CRUD', async () => {
 
     const filePath = join(wfDir, 'demo.mjs');
     writeFileSync(filePath, VALID, 'utf8');
+    process.env.NX_RP_WORKFLOWS_DIR = join(dir, 'wf-out');
 
     const saved = await service.saveWorkflow('demo', filePath);
     assert.equal(saved.name, 'demo');
@@ -110,6 +111,7 @@ test('listWorkflows + saveWorkflow + removeWorkflow: 完整 CRUD', async () => {
     assert.equal(after.length, 0);
   } finally {
     delete process.env.NX_RP_STORE;
+    delete process.env.NX_RP_WORKFLOWS_DIR;
     rmSync(dir, { recursive: true, force: true });
   }
 });

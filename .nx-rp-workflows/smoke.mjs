@@ -1,0 +1,1 @@
+export default async function run(ctx) { return await ctx.step("smoke", () => "ok"); }

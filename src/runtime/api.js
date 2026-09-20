@@ -26,8 +26,20 @@ function compareRoutes(a, b) {
   return pb.length - pa.length;
 }
 
+// 一个 action 可以声明多条 HTTP 路由。两种形态都支持：
+//   http: ['GET', '/path']                              单条
+//   http: ['GET', '/path', 'POST', '/path']             平铺多条（数组下标 0/2 是 method，1/3 是 path）
+//   http: [['GET','/path'], ['POST','/path']]           二元组数组
+// 全部拍平成单个路由条目，path 与 method 各算一次。
 const ROUTES = ACTIONS.filter((a) => a.http)
-  .map((action) => ({ action, route: compileRoute(action) }))
+  .flatMap((action) => {
+    const http = action.http;
+    let list;
+    if (Array.isArray(http[0])) list = http;                              // 二元组数组
+    else if (typeof http[0] === 'string' && http.length >= 4) list = [[http[0], http[1]], [http[2], http[3]]]; // 平铺
+    else list = [http];                                                  // 单条
+    return list.map((h) => ({ action, route: compileRoute({ http: h }) }));
+  })
   .sort(compareRoutes);
 
 export function sendJson(res, status, obj) {

@@ -118,7 +118,6 @@ function WorkflowInner() {
   const [events, setEvents] = useState([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState(null);
-  const [fileName, setFileName] = useState(null);
   const [selected, setSelected] = useState(null);
   const guard = useGuard();
   const toast = useToast();
@@ -144,35 +143,24 @@ function WorkflowInner() {
   }, []);
   useEffect(() => { refresh().catch(() => setList([])); }, [refresh]);
 
-  // ── 保存 ──────────────────────────────────────────────────────────
+  // ── 保存：通过后端 API（浏览器不能直接 fs.promises）───────────
 
   const save = () =>
     guard(async () => {
       if (error) { toast('JS 有语法错误，请先修正'); return; }
-      const fsp = await import('node:fs/promises');
-      const dir = '.nx-rp-workflows';
-      await fsp.mkdir(dir, { recursive: true });
-      const fname = `${dir}/${name}.mjs`;
-      await fsp.writeFile(fname, body, 'utf8');
-      setFileName(fname);
-      try {
-        await api('/api/workflows/' + encodeURIComponent(name), { method: 'PUT', body: { file: fname } });
-      } catch (e) {
-        if (String(e.message).includes('404') || String(e.message).includes('NOT_FOUND')) {
-          await api('/api/workflows', { method: 'POST', body: { name, file: fname } });
-        } else { throw e; }
-      }
+      // 后端 workflow.write 接收源码 + name，写到 cwd 下的 .nx-rp-workflows/<name>.mjs
+      // + 存到 ~/.nx-rp/<cwdHash>/workflows/<name>.mjs + 同步 store metadata
+      await api('/api/workflows/write', { method: 'POST', body: { name, body } });
       toast('已保存');
       await refresh();
     });
 
   const load = (w) =>
     guard(async () => {
-      const fsp = await import('node:fs/promises');
-      if (!w.sourceFile) { toast('该工作流没有 sourceFile 记录'); return; }
-      setBody(await fsp.readFile(w.sourceFile, 'utf8'));
+      // 拉源码（后端直接给，无需 fs）
+      const full = await api('/api/workflows/' + encodeURIComponent(w.name) + '/source');
+      setBody(full.body);
       setName(w.name);
-      setFileName(w.sourceFile);
       setEvents([]);
       setRfNodes([]); setRfEdges([]);
       toast('已加载 ' + w.name);
@@ -192,12 +180,8 @@ function WorkflowInner() {
   const run = () =>
     guard(async () => {
       if (error) { toast('JS 有语法错误，请先修正'); return; }
-      const fsp = await import('node:fs/promises');
-      const dir = '.nx-rp-workflows';
-      await fsp.mkdir(dir, { recursive: true });
-      const fname = fileName || `${dir}/${name}.mjs`;
-      await fsp.writeFile(fname, body, 'utf8');
-      setFileName(fname);
+      // 先把当前 body 写到后端（run 总是用最新源码）
+      const { file } = await api('/api/workflows/write', { method: 'POST', body: { name, body } });
       setEvents([]);
       setRfNodes([]); setRfEdges([]);
       setSelected(null);
@@ -206,9 +190,10 @@ function WorkflowInner() {
       abortRef.current = ctrl;
 
       try {
-        const res = await fetch('/api/workflows/run/' + encodeURIComponent(name) + '?file=' + encodeURIComponent(fname), {
-          signal: ctrl.signal,
-        });
+        // file 是可选：服务端会从 store 读 sourceFile 兜底
+        const url = '/api/workflows/run/' + encodeURIComponent(name)
+          + (file ? '?file=' + encodeURIComponent(file) : '');
+        const res = await fetch(url, { signal: ctrl.signal });
         if (!res.ok || !res.body) throw new Error('运行失败: HTTP ' + res.status);
         const reader = res.body.getReader();
         const decoder = new TextDecoder();

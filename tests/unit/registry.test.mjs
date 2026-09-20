@@ -34,7 +34,8 @@ test('注册表里的模块都有对应目录', () => {
 });
 
 test('每条 action 都声明了 CLI 命令（Web 操作必须有 CLI 等价）', () => {
-  const problems = ACTIONS.filter((a) => !cliPathsOf(a).length).map((a) => a.id);
+  // cli: null 是合法的——纯 HTTP action（workflow.write / workflow.source）走 API 不暴露 CLI
+  const problems = ACTIONS.filter((a) => !a.cli && a.cli !== null).map((a) => a.id);
   assert.deepEqual(problems, [], `以下 action 缺 CLI 命令: ${problems}`);
 });
 
@@ -54,7 +55,8 @@ test('action 的 http 要么是路由数组，要么显式 null', () => {
 });
 
 test('每条 HTTP 路由都能由某条 CLI 命令触达（核心保证）', () => {
-  const httpActions = ACTIONS.filter((a) => a.http);
+  // cli: null 跳（HTTP 专属 action 通过 API 暴露）
+  const httpActions = ACTIONS.filter((a) => a.http && a.cli);
   const bad = httpActions.filter((a) => !cliPathsOf(a).length).map((a) => a.id);
   assert.deepEqual(bad, [], `声明了 HTTP 但没 CLI 等价: ${bad}`);
 });
@@ -124,6 +126,8 @@ test('help 由声明生成：builtin + module 的命令都能被运行器解析�
   const cliPath = pathToFileURL(join(ROOT, 'src', 'runtime', 'cli.js')).href;
   const { ALL_COMMANDS, matchCommand } = await import(cliPath);
   for (const c of ALL_COMMANDS) {
+    // cli: null 是合法（纯 HTTP action），不参与解析回自身断言
+    if (!c.cli) continue;
     const path = (Array.isArray(c.cli[0]) ? c.cli[0] : c.cli).map(String);
     const m = matchCommand(ALL_COMMANDS, path);
     assert.ok(m, `命令无法解析回自己: ${path.join(' ')}`);

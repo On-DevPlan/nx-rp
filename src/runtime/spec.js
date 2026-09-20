@@ -82,7 +82,9 @@ export function applySpec(action, raw) {
   const positionalNames = argSpecsOf(action).map((a) => a.name);
   const rawArr = Array.isArray(raw.args) ? raw.args : [];
   positionalNames.forEach((n, i) => {
+    // 优先从 args 数组取；fallback 到扁平对象（HTTP 路由占位符 / query / body 合并的形态）
     if (i < rawArr.length) out[n] = rawArr[i];
+    else if (raw[n] !== undefined) out[n] = raw[n];
   });
   for (const f of flagSpecsOf(action)) {
     if (Object.prototype.hasOwnProperty.call(raw, f.name) || raw[f.name] !== undefined) {

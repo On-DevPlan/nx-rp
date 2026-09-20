@@ -34,7 +34,11 @@ for (const a of ACTIONS) {
   seenIds.add(a.id);
 
   const paths = cliPathsOf(a);
-  if (!paths.length) throw new Error(`action 没有声明 CLI 命令（Web 操作必须有 CLI 等价）: ${a.id}`);
+  // 允许 action 不声明 CLI（纯 HTTP action，例如 workflow.write / workflow.source）
+  // ——只要声明了 http，CLI 缺失是可以的。
+  if (!paths.length && !a.http) {
+    throw new Error(`action 没有声明 CLI 命令（Web 操作必须有 CLI 等价）: ${a.id}`);
+  }
   for (const path of paths) {
     const key = path.join(' ');
     if (seenCli.has(key)) throw new Error(`CLI 命令重复: ${key}（action ${a.id}）`);

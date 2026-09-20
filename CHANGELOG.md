@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.7 / 2026-09-20
+
+- 修 t.mkdir is not a function：浏览器侧 view.jsx 不再 import('node:fs/promises')
+- 新增后端 action `workflow.write`（POST /api/workflows/write，body={name, body}）
+- 新增后端 action `workflow.source`（GET /api/workflows/:name/source）
+- view 的 save/run 改为调这两个 HTTP 端；run 不需要 file 参数——后端从 store 读 sourceFile 兜底
+- 允许 action cli: null（纯 HTTP 专用 action）；registry 装载期不再强求 cli
+- cli: null 时 cliPathsOf 返回 []，保留原有的「http 必有 cli」对 http-only 之外的断言
+
 ## 0.1.6 / 2026-09-20
 
 - workflow 改成 JS 一等格式（agent 写 JS 远好过写 JSON）：

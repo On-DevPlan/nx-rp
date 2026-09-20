@@ -25,7 +25,7 @@
 import { PassThrough } from 'node:stream';
 import fsp from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, resolve, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { cwdScope } from '../../core/paths.js';
 import { loadStore, mutateStore } from '../../core/store.js';
@@ -34,10 +34,12 @@ import { notFound, invalidInput } from '../../core/errors.js';
 const VERSION = 1;
 
 // 工作流源码存储路径：~/.nx-rp/<scopeHash>/workflows/<name>.mjs
+// 测试可用 NX_RP_WORKFLOWS_DIR 环境变量覆盖。
 function scopeHash() {
   return Buffer.from(cwdScope()).toString('base64url').slice(0, 16);
 }
 function workflowsDir() {
+  if (process.env.NX_RP_WORKFLOWS_DIR) return process.env.NX_RP_WORKFLOWS_DIR;
   return join(process.env.HOME || process.env.USERPROFILE || '.', '.nx-rp', scopeHash(), 'workflows');
 }
 
@@ -274,8 +276,10 @@ async function runWorkflowStreamingInto(stream, filePath, _opts = {}) {
   const ctx = makeCtx(emit);
   try {
     const abs = isAbsolute(filePath) ? resolve(filePath) : join(process.cwd(), filePath);
-    const mod = await import(pathToFileURL(abs).href);
-    const run = mod.default || mod.run;
+    // 加 mtime query 绕 Node import cache：每次运行都重新加载源码变更
+    const cacheBust = `?t=${(await fsp.stat(abs).catch(() => ({ mtimeMs: Date.now() }))).mtimeMs}`;
+    const mod = await import(pathToFileURL(abs).href + cacheBust);
+    const run = mod.default;
     if (typeof run !== 'function') throw invalidInput('工作流文件必须 export default 一个函数');
     await run(ctx);
   } catch (e) {
@@ -298,8 +302,10 @@ export async function listWorkflows() {
   return names.filter((n) => n.endsWith('.mjs')).map((n) => {
     const name = n.slice(0, -'.mjs'.length);
     const m = meta[name] || {};
-    return { name, ...m };
-  }).sort((a, b) => (b.createdAt || 0).localeCompare(a.createdAt || 0));
+    // m 可能是 0.1.5 时代的 workflow 数据（包含 nodes/edges）——这种不要当成元数据
+    const isMeta = !m.nodes && !m.edges;
+    return { name, ...(isMeta ? m : {}) };
+  }).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
 }
 
 export async function saveWorkflow(name, filePath) {
@@ -313,22 +319,58 @@ export async function saveWorkflow(name, filePath) {
   try { await validateWorkflow(filePath); }
   catch (e) { throw invalidInput(`工作流校验失败: ${e.message || e}`); }
 
+  await writeWorkflowFiles(name, text);
+  return { name, path: workflowsDir() + '/' + name + '.mjs' };
+}
+
+// 内部：把源码写到两处（cwd 内 .nx-rp-workflows/<name>.mjs + scope 内 ~/.nx-rp/<scopeHash>/workflows/<name>.mjs）+ 同步 store metadata
+async function writeWorkflowFiles(name, text) {
+  // 1) cwd 内：让用户能在编辑器里打开看到源码
+  const cwdFile = join(process.cwd(), '.nx-rp-workflows', `${name}.mjs`);
+  await fsp.mkdir(dirname(cwdFile), { recursive: true });
+  await fsp.writeFile(cwdFile, text, 'utf8');
+  // 2) scope 内：list / run 的真实来源
   const dir = workflowsDir();
   await fsp.mkdir(dir, { recursive: true });
   const dest = join(dir, `${name}.mjs`);
   await fsp.writeFile(dest, text, 'utf8');
-
+  // 3) store metadata
   await mutateStore((s) => {
     const k = cwdScope();
     if (!s.scopes[k]) s.scopes[k] = { links: [], docs: [], workflows: {} };
     s.scopes[k].workflows[name] = {
       name, version: VERSION,
       createdAt: new Date().toISOString(),
-      sourceFile: filePath,
+      sourceFile: cwdFile,
     };
     return s;
   });
-  return { name, path: dest };
+  return cwdFile;
+}
+
+// 给 HTTP 端 / Web 端用：直接接受源码字符串（前端不能再读本地文件）
+export async function writeWorkflow(name, body) {
+  // 校验源码合法（用临时探针文件 import）
+  await fsp.mkdir(workflowsDir(), { recursive: true });
+  const probe = join(workflowsDir(), `__probe_${name}_${Date.now()}.mjs`);
+  await fsp.writeFile(probe, body, 'utf8');
+  try {
+    await validateWorkflow(probe);
+  } finally {
+    await fsp.unlink(probe).catch(() => {});
+  }
+  return writeWorkflowFiles(name, body);
+}
+
+// 读源码（HTTP 端：前端从 web 加载时用）
+export async function readWorkflowSource(name) {
+  const { cwdScope: getCwd } = await import('../../core/paths.js');
+  const k = getCwd();
+  const store = await loadStore();
+  const meta = (store.scopes[k] && store.scopes[k].workflows && store.scopes[k].workflows[name]) || {};
+  if (!meta.sourceFile) throw notFound(`工作流「${name}」无源码记录`);
+  const text = await fsp.readFile(meta.sourceFile, 'utf8');
+  return { name, body: text, file: meta.sourceFile };
 }
 
 export async function removeWorkflow(name) {
