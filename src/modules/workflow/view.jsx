@@ -80,13 +80,17 @@ const NODE_TYPES = { nxAction: CanvasNode, 'agent-call': CanvasNode, http: Canva
 
 function layoutWithDagre(nodes, edges, direction = 'LR') {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: direction, nodesep: 50, ranksep: 80 });
+  g.setGraph({ rankdir: direction, nodesep: 40, ranksep: 80 });
   g.setDefaultEdgeLabel(() => ({}));
 
   for (const n of nodes) {
     g.setNode(n.id, { width: 180, height: 60 });
   }
+  // 只用「强依赖」边定层级：parallel / conditional 边不参与布局——
+  // 否则同组并发节点会被 dagre 拉成一条竖线（每条虚线边都被当成层级依赖）
   for (const e of edges) {
+    const t = e.data?.type;
+    if (t === 'parallel' || t === 'conditional') continue;
     g.setEdge(e.source, e.target);
   }
   dagre.layout(g);
@@ -222,12 +226,13 @@ function WorkflowInner() {
   const applyEvent = (ev) => {
     setEvents((arr) => [...arr, { ...ev, at: Date.now() }]);
     if (ev.event === 'graph') {
+      const rfEdgesRaw = dedupeEdges(ev.data.edges.map(toRfEdge));
       const laid = layoutWithDagre(
         ev.data.nodes.map(toRfNode),
-        ev.data.edges.map(toRfEdge),
+        rfEdgesRaw,
       );
       setRfNodes(laid);
-      setRfEdges(ev.data.edges.map(toRfEdge));
+      setRfEdges(rfEdgesRaw);
     } else if (ev.event === 'nodeStart') {
       setRfNodes((ns) => ns.map((n) => n.id === ev.data.id ? { ...n, data: { ...n.data, status: 'running', startedAt: Date.now() } } : n));
     } else if (ev.event === 'nodeDone') {
@@ -372,6 +377,19 @@ function toRfEdge(e) {
     target: e.target,
     data: { type: e.type, blocking: e.blocking },
   };
+}
+
+// parallel 边按 id 排序去重：service 侧记录 n2->n3 与 n3->n2 两条，
+// 画布上一条虚线足够（双向语义由 edgeStyle 的双箭头表达）
+function dedupeEdges(edges) {
+  const seen = new Set();
+  return edges.filter((e) => {
+    if (e.data?.type !== 'parallel') return true;
+    const key = [e.source, e.target].sort().join('~');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 // 按 edge type 加视觉样式：seq 实线，parallel 虚线双箭头，conditional 虚线

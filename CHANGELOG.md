@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.9 / 2026-09-20
+
+- 修「列表混乱」：.row 补 flex 布局（display: flex / .name / .desc / .acts 子类），
+  三个视图（link / doc / workflow）的列表行恢复正常三段式
+- 修画布节点翻倍：ctx.nx / ctx.http / ctx.agent 在 step/parallel 的 fn 里调用时
+  不再自己声明节点，只把外层节点 type 修正为具体动作类型（nxAction / http / agent-call），
+  并重发 graph 事件让前端更新节点 label
+- dagre 布局只用 seq 边定层级（parallel / conditional 边不参与），
+  并发组节点不再被拉成一条竖线
+- parallel 边前端渲染去重（service 侧保留全量，画布一条虚线足够）
+
 ## 0.1.8 / 2026-09-20
 
 - 修「画布看不到图」：ReactFlow 容器从 minHeight: 460 改为 height: 480 + position: relative

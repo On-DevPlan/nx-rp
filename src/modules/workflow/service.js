@@ -136,14 +136,21 @@ function makeCtx(emit) {
     emit({ event: 'nodeStart', data: { id, name } });
 
     const t0 = Date.now();
+    insideStep++;
+    const prevNode = currentNodeId;
+    currentNodeId = id;
     return Promise.resolve()
       .then(() => fn())
       .then((data) => {
+        insideStep--;
+        currentNodeId = prevNode;
         patchNode(id, { status: 'success', finishedAt: Date.now(), ms: Date.now() - t0, payload: serialize(data) });
         emit({ event: 'nodeDone', data: { id, name, ok: true, ms: Date.now() - t0, data: serialize(data) } });
         return data;
       })
       .catch((err) => {
+        insideStep--;
+        currentNodeId = prevNode;
         const msg = err && err.message ? err.message : String(err);
         patchNode(id, { status: 'error', finishedAt: Date.now(), ms: Date.now() - t0, payload: msg });
         emit({ event: 'nodeDone', data: { id, name, ok: false, ms: Date.now() - t0, error: msg } });
@@ -153,7 +160,11 @@ function makeCtx(emit) {
 
   function patchNode(id, patch) {
     const n = graph.nodes.find((x) => x.id === id);
-    if (n) Object.assign(n, patch);
+    if (!n) return;
+    const typeChanged = patch.type && patch.type !== n.type;
+    Object.assign(n, patch);
+    // type 变化要重发 graph（前端节点卡片按 type 显示 label / 上色）
+    if (typeChanged) emitGraph();
   }
 
   // ── parallel(steps) ──────────────────────────────────────────
@@ -172,7 +183,8 @@ function makeCtx(emit) {
       if (lastNodeId) addEdge(lastNodeId, id, 'seq', true);
       return id;
     });
-    // 同组内两两之间：parallel 虚线（非阻塞）
+    // 同组内两两之间：parallel 虚线（非阻塞）。service 侧全量记录（API 消费者
+// 需要完整依赖信息）；前端画布渲染时按 id 去重（见 view.jsx edgeStyle）。
     for (let i = 0; i < newIds.length; i++) {
       for (let j = i + 1; j < newIds.length; j++) {
         addEdge(newIds[i], newIds[j], 'parallel', false);
@@ -194,17 +206,39 @@ function makeCtx(emit) {
     for (const [name, fn] of Object.entries(steps)) await step(name, fn);
   }
 
-  // http / nx / agent 都是 ctx.step 的语法糖：内部 ctx.step + 默认 type
+  // insideStep > 0 表示当前正在某个 step 的 fn 里执行——此时 http/nx/agent
+  // 不再自己声明节点（外层 step 已经在追踪了），只执行动作本身，
+  // 并把外层节点的 type 修正为具体动作类型（nxAction / http / agent-call）。
+  // 否则「列链接」包装节点 + 内部 link.list 节点会画成两个。
+  let insideStep = 0;
+  let currentNodeId = null;
+
+  // http / nx / agent 是 ctx.step 的语法糖：
+  //   - 在 step/parallel 的 fn 里调用：只执行动作 + 修正外层节点 type
+  //   - 裸调用（ctx.http(...) 不包 step）：自动包一层 step + 默认 type
   async function http(url, opts = {}) {
+    if (insideStep) {
+      patchNode(currentNodeId, { type: 'http' });
+      return fetchHttp(url, opts);
+    }
     return step(url.replace(/^https?:\/\//, ''), () => fetchHttp(url, opts), { type: 'http' });
   }
   async function nx(actionId, params = {}) {
+    if (insideStep) {
+      patchNode(currentNodeId, { type: 'nxAction', actionId });
+      const { dispatch } = await import('../../dispatcher.js');
+      return dispatch(actionId, params, { transport: 'cli' });
+    }
     return step(actionId, async () => {
       const { dispatch } = await import('../../dispatcher.js');
       return dispatch(actionId, params, { transport: 'cli' });
     }, { type: 'nxAction' });
   }
   async function agent(command, args = [], opts = {}) {
+    if (insideStep) {
+      patchNode(currentNodeId, { type: 'agent-call', command });
+      return spawnAgent(command, args, opts, emit);
+    }
     return step(`${command} ${args.join(' ')}`.trim(), () => spawnAgent(command, args, opts, emit), { type: 'agent-call' });
   }
 

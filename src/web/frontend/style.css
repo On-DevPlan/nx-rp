@@ -35,6 +35,14 @@ header .meta { margin-left: auto; min-width: 0; max-width: 46vw; overflow: hidde
 main { padding: 16px; }
 
 .row, td, th, input, select { height: var(--row-h); font-size: var(--fs-core); }
+
+/* 列表行：名称/描述/操作 三段式，flex 布局（view 里的 .row 结构依赖这些子类） */
+.row { display: flex; align-items: center; height: var(--row-h); padding: 0 12px; border-bottom: 1px solid var(--soft-2); transition: background 0.12s; }
+.row:hover { background: var(--soft); }
+.row:last-child { border-bottom: 0; }
+.row .name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .desc { color: var(--mid); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .acts { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .btn, .tab { height: var(--btn-h); font-size: var(--fs-core); }
 
 .btn { font: inherit; cursor: pointer; padding: 0 12px; border: 0; border-radius: var(--radius-btn); background: var(--ink); color: var(--paper); box-shadow: var(--shadow-relief); display: inline-flex; align-items: center; gap: 4px; transition: box-shadow 0.12s, transform 0.08s, background 0.12s; }

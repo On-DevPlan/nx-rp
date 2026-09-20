@@ -1,0 +1,1 @@
+export default async function run(ctx) { await ctx.parallel({ a: () => ctx.nx("link.list"), b: () => ctx.nx("doc.list") }); }
