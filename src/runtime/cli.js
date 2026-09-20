@@ -104,33 +104,38 @@ function renderJson(data) {
 
 // ---- 入口 ----
 
-import { BUILTINS, commandEntry } from './builtins.js';
+import { BUILTINS } from './builtins.js';
 
 export const ALL_COMMANDS = [...BUILTINS, ...ACTIONS];
 
 export async function runCli(argv) {
+  // 友好兼容：`--help` / `-h` / `help` 都等价
+  if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h' || argv[0] === 'help')) {
+    argv = ['help'];
+  } else if (argv.length === 0) {
+    argv = ['help'];
+  }
+
   const { argv: tokens, globals } = stripGlobal(argv);
   const json = !!globals.json;
 
   const m = matchCommand(ALL_COMMANDS, tokens);
   if (!m) {
-    if (tokens.length === 0 || tokens[0] === 'help' && tokens.length === 1) {
-      const all = ALL_COMMANDS.map(commandEntry);
-      console.log(json ? renderJson(all) : renderCli(all));
-      return;
-    }
     const e = new Error(`未知命令: ${tokens.join(' ')}\n用 nx-rp help 查看可用命令`);
     e.code = 'INVALID_INPUT';
     throw e;
   }
 
-  // serve / help / version 等平台命令不走 spec parser（它们的 shape 自管）
+  // serve / help / version / skill 等平台命令不走 spec parser（它们的 shape 自管）
   const action = m.command;
   const rest = m.rest;
 
   let ctx;
-  if (action.id === 'serve' || action.id === 'version' || action.id === 'help') {
-    ctx = rest;
+  const builtinIds = new Set(BUILTINS.map((b) => b.id));
+  if (builtinIds.has(action.id)) {
+    // 把 --json / --store 等全局 flag 一并喂给 rest，让 serve 等也能识别
+    ctx = [...rest];
+    if (globals.store) ctx.push('--store', globals.store);
   } else {
     const { args, flags } = parseFlags(action, rest);
     ctx = applySpecInline(action, { args, ...flags });

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.4 / 2026-09-20
+
+- 补 `nx-rp skill install` 命令（之前漏注册）
+  - 默认装到 ~/.claude/skills/<name>
+  - `--to <dir>` 改目标；`--force` 覆盖冲突
+  - 三态返回：未存→安装；一致→跳过；冲突→业务结果（exit 0）
+- 修 `nx-rp --help` / `-h` 兼容（之前报「未知命令: --help」）
+
 ## 0.1.3 / 2026-09-20
 
 - 修画布不渲染：reactflow 11.11.4 在 React 19 下不兼容
