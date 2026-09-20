@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.6 / 2026-09-20
+
+- workflow 改成 JS 一等格式（agent 写 JS 远好过写 JSON）：
+  - service：JS 执行引擎，ctx.step / ctx.parallel 自动建图 + emit SSE
+  - 5 种 Node type：nxAction / agent-call / http / raw
+  - 5 种 Node status：idle / running / success / error / skipped
+  - 3 种 Edge type：seq（实线强依赖）/ parallel（虚线并发组）/ conditional（虚线条件）
+  - 6 类 SSE 帧：graph / nodeStart / nodeDone / nodeLog / done / error
+  - 新增 @dagrejs/dagre 自动布局
+- 完整原语定义写在 assets/nx-rp/references/workflow-author.md
+- 校验必须 export default（拒绝 export const run 旧约定）
+- saveWorkflow 支持绝对路径与 cwd 相对路径
+- workflow view：三栏（已保存 / JS 编辑器 / 自动布局画布），5 色 status + 3 形边类型
+- nx-rp workflow run HTTP 端 SSE 流式输出 nodeStart/nodeDone/done
+
 ## 0.1.5 / 2026-09-20
 
 - 修画布拖动节点闪烁：nodes/edges 改用本地 state（useNodesState/useEdgesState），

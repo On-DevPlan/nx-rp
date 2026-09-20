@@ -1,11 +1,11 @@
-// workflow 模块的 action 声明：5 条 CRUD（list/get/add/update/remove）。
+// workflow 模块 action 声明：5 条 CRUD（list/get/add/update/remove）+ 3 条文件命令。
 //
-// 注意：本模块的 CLI 表面**刻意不暴露**给 agent 用的高频命令：
-//   - `workflow validate` 不作为 action（agent 跑 validate 是子操作）
-//   - `workflow format` / `apply` 同理
-// 这些走文件输入，与 add/update/remove 互补存在：
-//   - add / update / remove：直接编辑当前 cwd scope（CLI 等价命令）
-//   - validate / format / apply：基于文件（agent 编辑工作流的标准方式）
+// 注意：add/update/remove CLI 命令支持两种形态：
+//   1. 直接传内容：nx-rp workflow add <name>  --content "export default async (ctx) => { ... }"
+//   2. 从文件读：nx-rp workflow add <name> --file workflow.mjs
+//
+// 因为 LLM 生成 JS 比 JSON 顺手太多，本模块只接受 JS —— 服务端
+// 不再解析 JSON 拓扑，运行就是真的把 .mjs 加载执行。
 import * as service from './service.js';
 
 export default {
@@ -24,7 +24,7 @@ export default {
       run: () => service.listWorkflows(),
       render: (list) => {
         if (!list.length) return '（暂无工作流）';
-        return list.map((w) => `  ${w.name.padEnd(20)}  type=${w.type}  ${w.nodes} 节点 / ${w.edges} 边`).join('\n');
+        return list.map((w) => `  ${w.name.padEnd(20)}  ${(w.createdAt || '').slice(0, 19)}`).join('\n');
       },
     },
     {
@@ -32,36 +32,39 @@ export default {
       cli: ['workflow', 'get'],
       http: ['GET', '/api/workflows/:name'],
       args: ['name'],
-      summary: '读单个工作流的完整定义',
-      run: (ctx) => service.getWorkflow(ctx.name),
+      summary: '读工作流的存储位置与元数据（不含源码）',
+      run: async (ctx) => {
+        const list = await service.listWorkflows();
+        const hit = list.find((w) => w.name === ctx.name);
+        if (!hit) throw (await import('../../core/errors.js')).notFound(`工作流不存在: ${ctx.name}`);
+        return hit;
+      },
     },
     {
       id: 'workflow.add',
       cli: ['workflow', 'add'],
       http: ['POST', '/api/workflows'],
-      summary: '新建工作流（CLI 用 --file 读 JSON；HTTP body 即定义）',
+      summary: '新建工作流（CLI 用 --file 读 .mjs；HTTP body 即源码字符串）',
+      args: ['name'],
       flags: {
-        file: { type: 'string', hint: 'JSON 文件路径（cwd 作用域）' },
+        file: { type: 'string', hint: 'JS 文件路径（cwd 相对）' },
       },
       run: async (ctx) => {
-        const def = ctx.file ? await readJsonFile(ctx.file) : ctx.body || {};
-        return service.addWorkflow(def);
+        if (!ctx.file) throw (await import('../../core/errors.js')).invalidInput('缺少 --file <path>');
+        return service.saveWorkflow(ctx.name, ctx.file);
       },
-      render: (w) => `已登记工作流: ${w.name}  (${w.type})`,
+      render: (w) => `已登记工作流: ${w.name}  → ${w.path}`,
     },
     {
       id: 'workflow.update',
       cli: ['workflow', 'update'],
       http: ['PATCH', '/api/workflows/:name'],
       args: ['name'],
-      summary: '覆盖更新工作流（PATCH 语义）',
+      summary: '覆盖更新工作流源码（从 --file 读）',
       flags: {
-        file: { type: 'string', hint: 'JSON 文件路径' },
+        file: { type: 'string', required: true, hint: 'JS 文件路径' },
       },
-      run: async (ctx) => {
-        const def = ctx.file ? await readJsonFile(ctx.file) : ctx.body || {};
-        return service.updateWorkflow(ctx.name, def);
-      },
+      run: async (ctx) => service.saveWorkflow(ctx.name, ctx.file),
       render: (w) => `已更新: ${w.name}`,
     },
     {
@@ -70,90 +73,59 @@ export default {
       http: ['DELETE', '/api/workflows/:name'],
       args: ['name'],
       summary: '删除工作流',
-      run: (ctx) => service.removeWorkflow(ctx.name),
-      render: (w) => `已删除: ${w.name}`,
+      run: async (ctx) => service.removeWorkflow(ctx.name),
+      render: (r) => `已删除: ${r.name}`,
     },
+    // ─── 文件命令（agent 编辑工作流的核心接口） ─────────────────────
     {
-      // 文件编辑核心：agent 写文件 → validate 校验 → apply 写入
       id: 'workflow.validate',
       cli: ['workflow', 'validate'],
-      // 仅 CLI：Web 不需要（validate 是「上传前」动作，agent 用；Web 是「已上传」状态）
       http: null,
-      summary: '校验工作流文件（不写盘；通过即返回规范化定义）',
-      flags: {
-        file: { type: 'string', required: true, hint: 'JSON 文件路径' },
-      },
-      run: async (ctx) => {
-        const def = await readJsonFile(ctx.file);
-        const normalized = service.parseWorkflow(def);
-        return {
-          status: 'ok',
-          file: ctx.file,
-          name: normalized.name,
-          type: normalized.type,
-          nodes: normalized.nodes.length,
-          edges: normalized.edges.length,
-        };
-      },
-      render: (r) => `工作流「${r.name}」(${r.type}) 校验通过：${r.nodes} 节点 / ${r.edges} 边`,
+      summary: '校验 .mjs 文件：能 import、export default 是函数',
+      flags: { file: { type: 'string', required: true, hint: 'JS 文件路径' } },
+      run: async (ctx) => service.validateWorkflow(ctx.file),
+      render: (v) => `✓ 工作流「${v.name}」 校验通过（async=${v.isAsync}）`,
     },
     {
-      // format 是「美化」——agent 不该纠结 JSON 缩进
-      id: 'workflow.format',
-      cli: ['workflow', 'format'],
-      http: null,
-      summary: '把工作流定义规范化并美化输出（不写盘；stdout 即可被重定向）',
+      id: 'workflow.run',
+      cli: ['workflow', 'run'],
+      http: ['GET', '/api/workflows/run/:name', 'POST', '/api/workflows/run/:name'],
+      streamResponse: true,
+      summary: '运行工作流（HTTP 端 SSE 流式输出 nodeStart/nodeDone/done）',
+      args: ['name'],
       flags: {
-        file: { type: 'string', required: true, hint: '输入 JSON 文件路径' },
-        indent: { type: 'number', hint: '缩进空格数（默认 2）' },
+        file: { type: 'string', hint: '覆盖工作流存储路径（不指定就用 scope 里的）' },
       },
-      run: async (ctx) => {
-        const def = await readJsonFile(ctx.file);
-        const normalized = service.parseWorkflow(def);
-        const out = service.formatWorkflow(normalized, { indent: ctx.indent || 2 });
-        process.stdout.write(out + '\n');
+      run: async (ctx, meta) => {
+        // 找文件：file > 存储
+        let filePath = ctx.file;
+        if (!filePath) {
+          const list = await service.listWorkflows();
+          const hit = list.find((w) => w.name === ctx.name);
+          if (!hit || !hit.sourceFile) throw notFound(`未指定 --file，且工作流「${ctx.name}」没有 sourceFile 记录`);
+          filePath = hit.sourceFile;
+        }
+        const s = await service.runWorkflowFile(filePath);
+        if (meta?.transport === 'http') {
+          return {
+            headers: {
+              'content-type': 'text/event-stream; charset=utf-8',
+              'cache-control': 'no-store',
+              'x-accel-buffering': 'no',
+              connection: 'keep-alive',
+            },
+            stream: s,
+          };
+        }
+        // CLI：把帧直写 stdout
+        s.pipe(process.stdout);
         return undefined;
       },
-    },
-    {
-      // apply：agent 编辑工作流的最终落点
-      id: 'workflow.apply',
-      cli: ['workflow', 'apply'],
-      http: ['POST', '/api/workflows/apply'],
-      summary: '校验 + 写入当前 cwd scope（已存在则覆盖；agent 编辑工作流的标准命令）',
-      flags: {
-        file: { type: 'string', required: true, hint: 'JSON 文件路径' },
-      },
-      run: async (ctx) => {
-        const def = await readJsonFile(ctx.file);
-        const normalized = service.parseWorkflow(def);
-        // 已有则 update，没有则 add（apply 一条命令兼顾两种情况，避免 agent 还要先 list）
-        return mutateStoreForApply(normalized);
-      },
-      render: (r) => `已应用: ${r.name}  (${r.nodes.length} 节点 / ${r.edges.length} 边)`,
     },
   ],
 };
 
-// apply 内部：先检查再走 add 或 update
-async function mutateStoreForApply(def) {
-  const { mutateStore } = await import('../../core/store.js');
-  const { cwdScope } = await import('../../core/paths.js');
-  return mutateStore((store) => {
-    const k = cwdScope();
-    if (!store.scopes[k]) store.scopes[k] = { links: [], docs: [], workflows: {} };
-    const scope = store.scopes[k];
-    if (scope.workflows[def.name]) {
-      scope.workflows[def.name] = { ...scope.workflows[def.name], ...def, name: def.name, updatedAt: new Date().toISOString() };
-    } else {
-      scope.workflows[def.name] = { ...def, createdAt: new Date().toISOString() };
-    }
-    return scope.workflows[def.name];
-  });
-}
-
-async function readJsonFile(p) {
-  const { readFile } = await import('node:fs/promises');
-  const text = await readFile(p, 'utf8');
-  return JSON.parse(text);
+async function notFound(msg) {
+  const { notFound: nf } = await import('../../core/errors.js');
+  return nf(msg);
 }

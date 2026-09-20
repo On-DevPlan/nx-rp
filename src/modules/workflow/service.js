@@ -1,220 +1,348 @@
-// workflow 资源业务：解析 / 校验 / 美化 / 应用。
+// workflow 服务：JS 一等格式的执行引擎。
 //
-// 设计核心：
-//   1. workflow = 节点 + 边的有向图；节点 4 种类型（graph/pipeline/agent-call/http）
-//   2. v1 不实现节点数据传递（节点 A 输出 → 节点 B 输入）；各节点参数独立
-//   3. CLI 只暴露 validate / format / apply 三条命令——agent 通过写文件 + 三条命令自助管理
-//   4. apply 走 cwd-scope：每个 cwd 的工作流独立
+// **原语定义**（与 assets/nx-rp/references/workflow-author.md 同步）：
 //
-// 文件格式：JSON 顶层 { version, name, type, nodes, edges }。
-// 顶层 type 决定节点类型，节点里不再声明 type（自动按 kind 推）。
+//   Node = { id, name, type, status, startedAt?, finishedAt?, ms?, payload? }
+//     type:    'nxAction' | 'agent-call' | 'http' | 'raw'
+//     status:  'idle' | 'running' | 'success' | 'error' | 'skipped'
 //
-// JSON 不需要解析 YAML——node 内置 JSON.parse 已经够 agent 用。
+//   Edge = { source, target, type, blocking }
+//     type:    'seq' | 'parallel' | 'conditional'
+//     blocking: true | false（仅 seq / conditional 为 true）
+//
+//   事件（全部 SSE 帧）：
+//     graph     完整图（含 nodes + edges，每次新增节点/边都发）
+//     nodeStart { id, name }                       节点开始
+//     nodeDone  { id, name, ok, ms, data?, error? }  节点结束
+//     nodeLog   { id?, line }                       节点内日志
+//     done      { ok, elapsedMs }                  整体结束
+//     error     { message }                         顶层未捕获错误
+//
+// AI 生成 JS 源码（不是 JSON）—— JS 的控制流（if/for-await/Promise.all/try）是
+// 「母语」，不需要发明「group / dependsOn / when」等 JSON 字段。ctx.step/parallel
+// 把这些控制流翻译成 graph 事件，前端按 SSE 流实时画图。
 
-import { mutateStore } from '../../core/store.js';
-import { assertSafeName, cwdScope } from '../../core/paths.js';
+import { PassThrough } from 'node:stream';
+import fsp from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { isAbsolute, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { cwdScope } from '../../core/paths.js';
+import { loadStore, mutateStore } from '../../core/store.js';
 import { notFound, invalidInput } from '../../core/errors.js';
 
-// ---- 顶层 type：4 种节点类型的合法取值 ----
-const WORKFLOW_TYPES = new Set(['graph', 'pipeline', 'agent-call', 'http']);
-const NODE_TYPES = new Set(['nxAction', 'agent-call', 'http']); // 节点级 kind
-const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
+const VERSION = 1;
 
-function _makeId() {
-  return 'w_' + Math.random().toString(36).slice(2, 10);
+// 工作流源码存储路径：~/.nx-rp/<scopeHash>/workflows/<name>.mjs
+function scopeHash() {
+  return Buffer.from(cwdScope()).toString('base64url').slice(0, 16);
+}
+function workflowsDir() {
+  return join(process.env.HOME || process.env.USERPROFILE || '.', '.nx-rp', scopeHash(), 'workflows');
 }
 
-// ---- 解析 + 校验 ----
+// ─── 校验 ────────────────────────────────────────────────────────────
 
-// 把输入（JSON 字符串 / Buffer / 已解析对象）变成「规范化」的 workflow。
-// 任何字段缺失都补默认值；任何字段非法都抛 invalidInput（带清晰提示）。
-export function parseWorkflow(input) {
-  let raw;
-  if (typeof input === 'string' || input instanceof Uint8Array || Buffer.isBuffer(input)) {
-    try { raw = JSON.parse(typeof input === 'string' ? input : Buffer.from(input).toString('utf8')); }
-    catch (e) { throw invalidInput('JSON 解析失败: ' + (e.message || e)); }
-  } else if (typeof input === 'object' && input) {
-    raw = input;
-  } else {
-    throw invalidInput('工作流定义必须是 JSON 字符串或对象');
+export async function validateWorkflow(filePath) {
+  const abs = isAbsolute(filePath) ? resolve(filePath) : join(process.cwd(), filePath);
+  let mod;
+  try { mod = await import(pathToFileURL(abs).href); }
+  catch (e) { throw invalidInput(`加载失败: ${e.message}`); }
+  // 必须 export default（不接受 export const run 这种旧约定）
+  if (typeof mod.default !== 'function') {
+    throw invalidInput('工作流文件必须 export default 一个函数（async function run(ctx) 或同步函数）');
   }
-  return normalize(raw);
-}
-
-function normalize(raw) {
-  if (!raw || typeof raw !== 'object') throw invalidInput('工作流定义必须是对象');
-  const type = String(raw.type || 'graph');
-  if (!WORKFLOW_TYPES.has(type)) {
-    throw invalidInput(`顶层 type 必须是 ${[...WORKFLOW_TYPES].join('|')}，收到: ${raw.type}`);
-  }
-  const name = String(raw.name || '').trim();
-  if (!name) throw invalidInput('工作流必须有名 (name)');
-  const nodes = Array.isArray(raw.nodes) ? raw.nodes.map((n) => normalizeNode(n, type)) : [];
-  const edges = Array.isArray(raw.edges) ? raw.edges.map(normalizeEdge) : [];
-
-  // 拓扑校验：循环 / 悬空边 / 重复节点 id
-  const seen = new Set();
-  for (const n of nodes) {
-    if (seen.has(n.id)) throw invalidInput(`重复节点 id: ${n.id}`);
-    seen.add(n.id);
-  }
-  for (const e of edges) {
-    if (!seen.has(e.source) || !seen.has(e.target)) {
-      throw invalidInput(`边的端点引用了不存在的节点: ${e.source} -> ${e.target}`);
-    }
-  }
-  topologicalValidate(nodes, edges);
-
-  return { version: 1, name, type, nodes, edges };
-}
-
-function normalizeNode(n, _topType) {
-  if (!n || typeof n !== 'object') throw invalidInput('节点必须是对象');
-  if (typeof n.id !== 'string' || !n.id) throw invalidInput('节点必须有 id');
-  // 节点 kind 必填——按 kind 缺省明确比「暗示自动跑一个」更安全
-  const kind = n.kind || n.type;
-  if (!kind) {
-    throw invalidInput(`节点 ${n.id} 缺 kind（必须是 nxAction | agent-call | http 之一）`);
-  }
-  if (!NODE_TYPES.has(kind)) {
-    throw invalidInput(`节点 ${n.id} 的 kind 非法: ${kind}（必须是 nxAction | agent-call | http 之一）`);
-  }
-  // kind 特定必填字段
-  if (kind === 'agent-call') {
-    if (typeof n.command !== 'string' || !n.command) {
-      throw invalidInput(`agent-call 节点 ${n.id} 必须有 command（要调哪个 agent CLI）`);
-    }
-  } else if (kind === 'http') {
-    if (typeof n.url !== 'string' || !n.url) {
-      throw invalidInput(`http 节点 ${n.id} 必须有 url`);
-    }
-    const method = String(n.method || 'GET').toUpperCase();
-    if (!HTTP_METHODS.has(method)) {
-      throw invalidInput(`http 节点 ${n.id} 的 method 必须是 ${[...HTTP_METHODS].join('|')}`);
-    }
-  } else if (kind === 'nxAction') {
-    if (typeof n.actionId !== 'string' || !n.actionId) {
-      throw invalidInput(`nxAction 节点 ${n.id} 必须有 actionId（要调哪个 nx-rp 命令）`);
-    }
-  }
-
   return {
-    id: n.id,
-    kind,
-    position: positionOf(n.position),
-    actionId: n.actionId,
-    command: n.command,
-    prompt: typeof n.prompt === 'string' ? n.prompt : '',
-    method: kind === 'http' ? String(n.method || 'GET').toUpperCase() : undefined,
-    url: n.url,
-    headers: n.headers && typeof n.headers === 'object' ? n.headers : undefined,
-    body: n.body,
-    params: n.params && typeof n.params === 'object' ? n.params : {},
+    file: abs,
+    hasDefault: typeof mod.default === 'function',
+    name: mod.default.name || '(anonymous)',
+    isAsync: mod.default.constructor.name === 'AsyncFunction',
   };
 }
 
-function normalizeEdge(e) {
-  if (!e || typeof e !== 'object') throw invalidInput('边必须是对象');
-  if (typeof e.source !== 'string' || typeof e.target !== 'string') {
-    throw invalidInput('边必须有 source / target');
-  }
-  return { id: typeof e.id === 'string' ? e.id : `${e.source}->${e.target}`, source: e.source, target: e.target };
+// ─── 运行 ────────────────────────────────────────────────────────────
+
+// 序列化返回值（避免流 / 不可序列化对象塞进 SSE）
+function serialize(d) {
+  if (d === undefined || d === null) return null;
+  if (typeof d === 'object' && d && typeof d.pipe === 'function') return { __stream__: true };
+  try { JSON.stringify(d); return d; }
+  catch { return { __unserializable__: true, type: d.constructor?.name || 'unknown' }; }
 }
 
-function positionOf(p) {
-  if (!p || typeof p !== 'object') return { x: 0, y: 0 };
-  return { x: Number(p.x) || 0, y: Number(p.y) || 0 };
-}
+// ctx 是工作流执行时的能力包。所有 API 都通过 ctx 暴露。
+// 每个 ctx.step / ctx.parallel 自动 emit 节点/边事件。
+function makeCtx(emit) {
+  const graph = { nodes: [], edges: [], counter: 0 };
 
-// Kahn 拓扑：环报错
-function topologicalValidate(nodes, edges) {
-  const deg = new Map();
-  for (const n of nodes) deg.set(n.id, 0);
-  for (const e of edges) {
-    if (!deg.has(e.source) || !deg.has(e.target)) continue;
-    deg.set(e.target, (deg.get(e.target) || 0) + 1);
+  // 当前游标：记录「上一节点 id」与「当前 parallel 组」
+  let lastNodeId = null;
+  let lastParallelGroup = null;
+
+  function declareNode(name, type = 'raw') {
+    const id = 'n' + (++graph.counter);
+    graph.nodes.push({ id, name, type, status: 'idle' });
+    emitGraph();
+    return id;
   }
-  const queue = [];
-  for (const [id, d] of deg) if (d === 0) queue.push(id);
-  let visited = 0;
-  while (queue.length) {
-    const id = queue.shift();
-    visited++;
-    for (const e of edges) {
-      if (e.source !== id) continue;
-      deg.set(e.target, deg.get(e.target) - 1);
-      if (deg.get(e.target) === 0) queue.push(e.target);
+
+  function addEdge(source, target, type, blocking) {
+    graph.edges.push({
+      id: `${source}->${target}-${graph.edges.length}`,
+      source, target, type, blocking: !!blocking,
+    });
+  }
+
+  function emitGraph() {
+    emit({ event: 'graph', data: { nodes: [...graph.nodes], edges: [...graph.edges] } });
+  }
+
+  // ── step(name, fn, opts?) ─────────────────────────────────────
+  //
+  //   opts.type:      节点 type（默认 raw）
+  //   opts.after:     显式前驱名（string[]）—— 默认 = 上一个节点
+  //   opts.kind:      同 type（alias，保持向后兼容）
+  function step(name, fn, opts = {}) {
+    const type = opts.type || opts.kind || 'raw';
+    const id = declareNode(name, type);
+
+    // 显式前驱
+    const afterNames = [].concat(opts.after || []).filter(Boolean);
+    if (afterNames.length) {
+      const nameMap = collectNameIds(graph);
+      for (const a of afterNames) {
+        const ids = nameMap.get(a) || [];
+        for (const aid of ids) addEdge(aid, id, 'seq', true);
+      }
+    } else if (lastNodeId && lastParallelGroup !== currentGroup()) {
+      // 默认：上一节点 → 本节点（seq 边）
+      addEdge(lastNodeId, id, 'seq', true);
+    }
+
+    emitGraph();
+    lastNodeId = id;
+    return runStep(id, name, fn);
+  }
+
+  function currentGroup() {
+    return lastParallelGroup;
+  }
+
+  function runStep(id, name, fn) {
+    // status: idle → running
+    patchNode(id, { status: 'running', startedAt: Date.now() });
+    emit({ event: 'nodeStart', data: { id, name } });
+
+    const t0 = Date.now();
+    return Promise.resolve()
+      .then(() => fn())
+      .then((data) => {
+        patchNode(id, { status: 'success', finishedAt: Date.now(), ms: Date.now() - t0, payload: serialize(data) });
+        emit({ event: 'nodeDone', data: { id, name, ok: true, ms: Date.now() - t0, data: serialize(data) } });
+        return data;
+      })
+      .catch((err) => {
+        const msg = err && err.message ? err.message : String(err);
+        patchNode(id, { status: 'error', finishedAt: Date.now(), ms: Date.now() - t0, payload: msg });
+        emit({ event: 'nodeDone', data: { id, name, ok: false, ms: Date.now() - t0, error: msg } });
+        throw err;
+      });
+  }
+
+  function patchNode(id, patch) {
+    const n = graph.nodes.find((x) => x.id === id);
+    if (n) Object.assign(n, patch);
+  }
+
+  // ── parallel(steps) ──────────────────────────────────────────
+  //
+  // 同组节点之间不连实线边——只画 parallel 虚线（视觉表达同组）。
+  // 组入口：上一节点 → 组内每个节点（seq 边）。
+  async function parallel(steps) {
+    const entries = Object.entries(steps);
+    if (!entries.length) return;
+
+    // 预声明所有节点（前端能在并行开始前看到完整一组）
+    const groupId = 'g' + (++graph.counter);
+    const newIds = entries.map(([name]) => {
+      const id = declareNode(name, 'raw');
+      // 上一个节点 → 组内每个节点（seq）
+      if (lastNodeId) addEdge(lastNodeId, id, 'seq', true);
+      return id;
+    });
+    // 同组内两两之间：parallel 虚线（非阻塞）
+    for (let i = 0; i < newIds.length; i++) {
+      for (let j = i + 1; j < newIds.length; j++) {
+        addEdge(newIds[i], newIds[j], 'parallel', false);
+      }
+    }
+    emitGraph();
+
+    const prevGroup = lastParallelGroup;
+    lastParallelGroup = groupId;
+    lastNodeId = newIds[newIds.length - 1]; // 下一节点的「上一节点」= 组内任意
+    try {
+      await Promise.all(entries.map(([name, fn], i) => runStep(newIds[i], name, fn)));
+    } finally {
+      lastParallelGroup = prevGroup;
     }
   }
-  if (visited !== nodes.length) {
-    throw invalidInput('工作流存在环或悬空边，无法解析');
+
+  async function series(steps) {
+    for (const [name, fn] of Object.entries(steps)) await step(name, fn);
   }
+
+  // http / nx / agent 都是 ctx.step 的语法糖：内部 ctx.step + 默认 type
+  async function http(url, opts = {}) {
+    return step(url.replace(/^https?:\/\//, ''), () => fetchHttp(url, opts), { type: 'http' });
+  }
+  async function nx(actionId, params = {}) {
+    return step(actionId, async () => {
+      const { dispatch } = await import('../../dispatcher.js');
+      return dispatch(actionId, params, { transport: 'cli' });
+    }, { type: 'nxAction' });
+  }
+  async function agent(command, args = [], opts = {}) {
+    return step(`${command} ${args.join(' ')}`.trim(), () => spawnAgent(command, args, opts, emit), { type: 'agent-call' });
+  }
+
+  function log(line) {
+    emit({ event: 'nodeLog', data: { line } });
+  }
+
+  return { step, parallel, series, http, nx, agent, log };
 }
 
-// ---- format: 美化输出 ----
-
-export function formatWorkflow(def, { indent = 2 } = {}) {
-  return JSON.stringify(def, null, indent);
+function collectNameIds(g) {
+  const m = new Map();
+  for (const n of g.nodes) {
+    if (!m.has(n.name)) m.set(n.name, []);
+    m.get(n.name).push(n.id);
+  }
+  return m;
 }
 
-// ---- 当前 cwd scope 的 workflow 存储（map by name） ----
-
-function currentScope(store) {
-  const k = cwdScope();
-  if (!store.scopes[k]) store.scopes[k] = { links: [], docs: [], workflows: {} };
-  return store.scopes[k];
+async function fetchHttp(url, opts = {}) {
+  const res = await fetch(url, opts);
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = text; }
+  return { status: res.status, ok: res.ok, data };
 }
 
-// ---- CRUD（与 link / doc 同形，5 条全有） ----
+function spawnAgent(command, args, opts, emit) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+    let buf = '';
+    child.stdout.on('data', (chunk) => {
+      buf += chunk.toString('utf8');
+      const parts = buf.split('\n');
+      buf = parts.pop();
+      for (const line of parts) {
+        if (!line.trim()) continue;
+        emit({ event: 'nodeLog', data: { source: command, line } });
+      }
+    });
+    child.stderr.on('data', (chunk) => {
+      emit({ event: 'nodeLog', data: { source: command + ':stderr', line: chunk.toString('utf8').trim() } });
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve({ code });
+      else reject(new Error(`${command} exited ${code}`));
+    });
+  });
+}
+
+// 把事件序列化成 SSE 帧
+function writeFrame(stream, ev) {
+  stream.write(`event: ${ev.event}\n`);
+  stream.write(`data: ${JSON.stringify(ev.data)}\n\n`);
+}
+
+// 跑一个工作流文件，返回 PassThrough（前端可订阅）
+export async function runWorkflowFile(filePath, opts = {}) {
+  const stream = new PassThrough();
+  runWorkflowStreamingInto(stream, filePath, opts).catch(() => {});
+  return stream;
+}
+
+async function runWorkflowStreamingInto(stream, filePath, _opts = {}) {
+  const start = Date.now();
+  let ok = true;
+  const emit = (ev) => writeFrame(stream, ev);
+  const ctx = makeCtx(emit);
+  try {
+    const abs = isAbsolute(filePath) ? resolve(filePath) : join(process.cwd(), filePath);
+    const mod = await import(pathToFileURL(abs).href);
+    const run = mod.default || mod.run;
+    if (typeof run !== 'function') throw invalidInput('工作流文件必须 export default 一个函数');
+    await run(ctx);
+  } catch (e) {
+    ok = false;
+    emit({ event: 'error', data: { message: e && e.message ? e.message : String(e) } });
+  }
+  emit({ event: 'done', data: { ok, elapsedMs: Date.now() - start } });
+  stream.end();
+}
+
+// ─── CRUD ────────────────────────────────────────────────────────────
 
 export async function listWorkflows() {
-  const { scope } = await (await import('../../core/store.js')).getCurrentScope();
-  return Object.entries(scope.workflows).map(([name, w]) => ({
-    name,
-    type: w.type,
-    nodes: w.nodes.length,
-    edges: w.edges.length,
-  }));
+  const dir = workflowsDir();
+  let names = [];
+  try { names = await fsp.readdir(dir); } catch { return []; }
+  const store = await loadStore();
+  const k = cwdScope();
+  const meta = (store.scopes[k] && store.scopes[k].workflows) || {};
+  return names.filter((n) => n.endsWith('.mjs')).map((n) => {
+    const name = n.slice(0, -'.mjs'.length);
+    const m = meta[name] || {};
+    return { name, ...m };
+  }).sort((a, b) => (b.createdAt || 0).localeCompare(a.createdAt || 0));
 }
 
-export async function getWorkflow(name) {
-  assertSafeName(name, '工作流名');
-  const { scope } = await (await import('../../core/store.js')).getCurrentScope();
-  const w = scope.workflows[name];
-  if (!w) throw notFound(`工作流不存在: ${name}`);
-  return w;
-}
+export async function saveWorkflow(name, filePath) {
+  const abs = isAbsolute(filePath) ? resolve(filePath) : join(process.cwd(), filePath);
+  let text;
+  try { text = await fsp.readFile(abs, 'utf8'); }
+  catch (e) {
+    if (e && e.code === 'ENOENT') throw notFound(`工作流文件不存在: ${filePath}`);
+    throw invalidInput(`读取失败: ${e.message || e}`);
+  }
+  try { await validateWorkflow(filePath); }
+  catch (e) { throw invalidInput(`工作流校验失败: ${e.message || e}`); }
 
-export async function addWorkflow(def) {
-  const w = parseWorkflow(def);
-  return mutateStore((store) => {
-    const scope = currentScope(store);
-    if (scope.workflows[w.name]) {
-      throw invalidInput(`工作流已存在: ${w.name}（用 update 覆盖）`);
-    }
-    scope.workflows[w.name] = { ...w, createdAt: new Date().toISOString() };
-    return scope.workflows[w.name];
+  const dir = workflowsDir();
+  await fsp.mkdir(dir, { recursive: true });
+  const dest = join(dir, `${name}.mjs`);
+  await fsp.writeFile(dest, text, 'utf8');
+
+  await mutateStore((s) => {
+    const k = cwdScope();
+    if (!s.scopes[k]) s.scopes[k] = { links: [], docs: [], workflows: {} };
+    s.scopes[k].workflows[name] = {
+      name, version: VERSION,
+      createdAt: new Date().toISOString(),
+      sourceFile: filePath,
+    };
+    return s;
   });
-}
-
-export async function updateWorkflow(name, def) {
-  assertSafeName(name, '工作流名');
-  const w = parseWorkflow({ ...(typeof def === 'object' ? def : {}), name });
-  return mutateStore((store) => {
-    const scope = currentScope(store);
-    if (!scope.workflows[name]) throw notFound(`工作流不存在: ${name}`);
-    scope.workflows[name] = { ...scope.workflows[name], ...w, name };
-    return scope.workflows[name];
-  });
+  return { name, path: dest };
 }
 
 export async function removeWorkflow(name) {
-  assertSafeName(name, '工作流名');
-  return mutateStore((store) => {
-    const scope = currentScope(store);
-    if (!scope.workflows[name]) throw notFound(`工作流不存在: ${name}`);
-    const removed = scope.workflows[name];
-    delete scope.workflows[name];
-    return removed;
+  const dir = workflowsDir();
+  const dest = join(dir, `${name}.mjs`);
+  try { await fsp.unlink(dest); }
+  catch (e) {
+    if (e && e.code === 'ENOENT') throw notFound(`工作流不存在: ${name}`);
+    throw e;
+  }
+  await mutateStore((s) => {
+    const k = cwdScope();
+    if (s.scopes[k] && s.scopes[k].workflows) delete s.scopes[k].workflows[name];
+    return s;
   });
+  return { name, removed: true };
 }

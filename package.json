@@ -1,6 +1,6 @@
 {
   "name": "nx-rp",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "nx-rp（npx-repo）—— 外部信息以链接方式管理：link / doc / workflow 三个域，CLI + Web 面板同源，按 cwd 自动隔离 scope",
   "type": "module",
   "bin": {
@@ -55,6 +55,7 @@
     "vite": "^8.3.0"
   },
   "dependencies": {
+    "@dagrejs/dagre": "1.1.4",
     "@xyflow/react": "12.11.6",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"

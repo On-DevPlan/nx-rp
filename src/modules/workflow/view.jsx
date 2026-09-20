@@ -1,258 +1,184 @@
-// workflow 面板：JSON 编辑 + React Flow 画布（双向同步）。
+// workflow 面板：JS 编辑器（左） + 自动布局画布（右）。
 //
-// 三栏布局 + 底部 JSON 折叠：
-//   左 palette（4 种节点模板，拖入画布）
-//   中 ReactFlow 画布（自定义节点按 kind 渲染）
-//   右 选中节点的属性表单（按 kind 推导字段）
-//   底 JSON 预览（折叠；点击展开看原始 JSON 与校验状态）
+// agent 写 JS（user 不写）；运行时 SSE 推 4 类事件：
+//   graph       整图（含 nodes + edges）
+//   nodeStart   节点进入 running
+//   nodeDone    节点结束（ok / error）
+//   nodeLog     自定义日志
+//   done        全部完成
 //
-// 双向同步：画布上拖拽 / 移动 / 连线 → 写回 body 字符串 → 实时校验。
-// JSON 修改（手敲）也会反映到画布——但只在受控模式下做：画布是「真」，JSON 是「投影」。
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ReactFlow, Background, Controls, Handle, MiniMap, Position,
-  ReactFlowProvider, addEdge,
+// 节点 status 色：
+//   idle       灰底
+//   running    蓝底 + 边框
+//   success    绿底
+//   error      红底
+//   skipped    灰斜线
+//
+// 边 type：
+//   seq         实线箭头（强依赖）
+//   parallel    虚线双箭头（并发组）
+//   conditional 虚线带 ?label（条件边）
+//
+// 布局：dagre 自动布局，从 sources（无前驱的节点）开始按列展开。
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ReactFlow, Background, Controls, Handle, Position,
+  ReactFlowProvider, MarkerType,
   useNodesState, useEdgesState,
 } from '@xyflow/react';
+import * as dagre from '@dagrejs/dagre';
 import { api } from '../../web/frontend/api/client.js';
 import { useDialog, useGuard, useToast } from '../../web/frontend/components/ui.jsx';
 import { CliHints } from '../../web/frontend/components/CliHints.jsx';
 import { useStore } from '../../web/frontend/store.jsx';
 
-const STARTER = JSON.stringify({
-  version: 1, name: 'demo', type: 'pipeline',
-  nodes: [{ id: 'a', kind: 'nxAction', actionId: 'link.list' }],
-  edges: [],
-}, null, 2);
+const STARTER = `// 写一个 async 函数，导出默认。
+// ctx.step(name, fn, opts?)  节点：自动建图 + 状态追踪
+//   opts.type:    'nxAction' | 'agent-call' | 'http' | 'raw'
+//   opts.after:   [name]  显式前驱
+// ctx.parallel({ a: fn, b: fn })  并发：节点同组、虚线相连
+// ctx.http(url) / ctx.nx(id, p) / ctx.agent(cmd, args)  都是 ctx.step 的语法糖
+export default async function run(ctx) {
+  await ctx.parallel({
+    '启动后端': () => ctx.agent('node', ['./server.js']),
+    '启动db':   () => ctx.agent('docker', ['compose', 'up', '-d']),
+  });
+  await ctx.step('健康检查', () => ctx.http('http://localhost:3000/health'));
+  await ctx.step('跑测试', () => ctx.agent('pnpm', ['test']));
+}
+`;
 
-// ─── 节点模板（palette 显示） ──────────────────────────────────────────
+// ─── 节点卡片：按 type 与 status 上色 ──────────────────────────────────────
 
-const PALETTE = [
-  { kind: 'nxAction',  label: 'nxAction',  desc: '调用 nx-rp 自身的命令',
-    defaults: () => ({ id: '', kind: 'nxAction', actionId: 'link.list' }) },
-  { kind: 'agent-call', label: 'agent-call', desc: '调外部 agent CLI（claude / codex 等）',
-    defaults: () => ({ id: '', kind: 'agent-call', command: 'claude', prompt: '' }) },
-  { kind: 'http',      label: 'http',       desc: '调任意 HTTP 端点',
-    defaults: () => ({ id: '', kind: 'http', method: 'GET', url: '', headers: {}, body: '' }) },
-];
-
-// ─── 画布上的自定义节点 ──────────────────────────────────────────────
+const TYPE_LABEL = {
+  nxAction: 'nx',
+  'agent-call': 'agent',
+  http: 'http',
+  raw: 'step',
+};
 
 function CanvasNode({ data, selected }) {
+  const status = data.status || 'idle';
   return (
-    <div className={'wf-canvas-node' + (selected ? ' selected' : '')}>
+    <div className={'wf-canvas-node wf-status-' + status + (selected ? ' selected' : '')}>
       <Handle type="target" position={Position.Left} />
-      <div className="wf-canvas-node-kind">{data.kind}</div>
-      <div className="wf-canvas-node-title">{labelFor(data)}</div>
+      <div className="wf-canvas-node-type">{TYPE_LABEL[data.type] || data.type}</div>
+      <div className="wf-canvas-node-name">{data.name}</div>
+      {data.ms != null && status !== 'idle' && status !== 'running' && (
+        <div className="wf-canvas-node-ms">{data.ms} ms</div>
+      )}
+      {data.status === 'error' && data.payload && (
+        <div className="wf-canvas-node-err">{String(data.payload).slice(0, 40)}</div>
+      )}
       <Handle type="source" position={Position.Right} />
     </div>
   );
 }
 
-function labelFor(d) {
-  if (d.kind === 'nxAction') return d.actionId || '(no actionId)';
-  if (d.kind === 'agent-call') return `${d.command || '?'}: ${(d.prompt || '').slice(0, 18)}`;
-  if (d.kind === 'http') return `${d.method || 'GET'} ${d.url || ''}`;
-  return d.id || '?';
-}
+const NODE_TYPES = { nxAction: CanvasNode, 'agent-call': CanvasNode, http: CanvasNode, raw: CanvasNode };
 
-const NODE_TYPES = { nxAction: CanvasNode, 'agent-call': CanvasNode, http: CanvasNode };
+// ─── dagre 自动布局 ──────────────────────────────────────────────────────
 
-// ─── 校验（与 service.parseWorkflow 同形，但只读不抛） ────────────────
+function layoutWithDagre(nodes, edges, direction = 'LR') {
+  const g = new dagre.graphlib.Graph();
+  g.setGraph({ rankdir: direction, nodesep: 50, ranksep: 80 });
+  g.setDefaultEdgeLabel(() => ({}));
 
-const WORKFLOW_TYPES = new Set(['graph', 'pipeline', 'agent-call', 'http']);
-const NODE_KINDS = new Set(['nxAction', 'agent-call', 'http']);
-const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
-
-function validateBody(body) {
-  try {
-    const o = JSON.parse(body);
-    if (!o || typeof o !== 'object') return 'JSON 必须是对象';
-    if (!o.name) return '缺 name';
-    if (!WORKFLOW_TYPES.has(o.type)) return 'type 必须是 graph / pipeline / agent-call / http';
-    if (!Array.isArray(o.nodes)) return 'nodes 必须是数组';
-    if (!Array.isArray(o.edges)) return 'edges 必须是数组';
-    const seen = new Set();
-    for (const n of o.nodes) {
-      if (!n.id) return '节点缺 id';
-      if (seen.has(n.id)) return '重复节点 id: ' + n.id;
-      seen.add(n.id);
-      if (!NODE_KINDS.has(n.kind)) return `节点 ${n.id} 的 kind 非法: ${n.kind}`;
-      if (n.kind === 'nxAction' && !n.actionId) return `nxAction 节点 ${n.id} 缺 actionId`;
-      if (n.kind === 'agent-call' && !n.command) return `agent-call 节点 ${n.id} 缺 command`;
-      if (n.kind === 'http' && !n.url) return `http 节点 ${n.id} 缺 url`;
-      if (n.kind === 'http' && n.method && !HTTP_METHODS.has(String(n.method).toUpperCase())) {
-        return `http 节点 ${n.id} 的 method 非法`;
-      }
-    }
-    for (const e of o.edges) {
-      if (!seen.has(e.source) || !seen.has(e.target)) return `边的端点引用了不存在的节点`;
-    }
-    return null;
-  } catch (e) {
-    return 'JSON 解析失败: ' + (e.message || e);
+  for (const n of nodes) {
+    g.setNode(n.id, { width: 180, height: 60 });
   }
+  for (const e of edges) {
+    g.setEdge(e.source, e.target);
+  }
+  dagre.layout(g);
+
+  return nodes.map((n) => {
+    const pos = g.node(n.id);
+    return {
+      ...n,
+      position: { x: pos.x - 90, y: pos.y - 30 },
+      targetPosition: direction === 'LR' ? Position.Left : Position.Top,
+      sourcePosition: direction === 'LR' ? Position.Right : Position.Bottom,
+    };
+  });
 }
 
-// ─── 主面板 ──────────────────────────────────────────────────────────
+// ─── 状态色（CSS 直接用 wf-status-* 类名）────────────────────────────────
+
+// ─── 主组件 ────────────────────────────────────────────────────────────
 
 export default function WorkflowView() {
-  return (
-    <ReactFlowProvider>
-      <WorkflowInner />
-    </ReactFlowProvider>
-  );
+  return <ReactFlowProvider><WorkflowInner /></ReactFlowProvider>;
 }
 
 function WorkflowInner() {
   const { boot } = useStore();
   const [list, setList] = useState(null);
+  const [name, setName] = useState('demo');
   const [body, setBody] = useState(STARTER);
-  const [selectedNodeId, setSelectedNodeId] = useState(null);
-  const [showJson, setShowJson] = useState(false);
+  const [events, setEvents] = useState([]);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState(null);
+  const [fileName, setFileName] = useState(null);
+  const [selected, setSelected] = useState(null);
   const guard = useGuard();
   const toast = useToast();
   const { dialog, node: dialogNode } = useDialog();
   const scopeKey = boot?.cwdScope || '';
-  const wrapperRef = useRef(null);
+  const abortRef = useRef(null);
 
-  const error = useMemo(() => validateBody(body), [body]);
-  const parsed = useMemo(() => {
-    if (error) return null;
-    try { return JSON.parse(body); } catch { return null; }
-  }, [body, error]);
+  const [rfNodes, setRfNodes, onNodesChange] = useNodesState([]);
+  const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState([]);
 
-  // nodes/edges 走本地 state，ReactFlow 直接用——避免「body → derived nodes」
-  // 导致每次 onNodesChange 重算整个数组，节点身份变 → ReactFlow 重挂载 → 闪烁。
-  // 同步方向：
-  //   外部变更（load / reset / apply 后）→ 从 parsed 同步进 nodesState
-  //   画布事件（onNodesChange / onConnect / palette 拖入 / 属性编辑）→ 写 nodesState + 写回 body
-  const initialNodes = useMemo(() => (parsed?.nodes || []).map(toRfNode), []); // 仅首次
-  const initialEdges = useMemo(() => (parsed?.edges || []).map(toRfEdge), []); // 仅首次
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
-
-  // 当 body 是「外部来源」（load / reset / apply 成功）变化时，把 parsed 同步进 nodes/edges
-  // 通过 ref 标记「外部同步中」，避免 onNodesChange 再把它写回 body 形成回环。
-  const externalSyncRef = useRef(false);
-
+  // 实时校验 JS 语法
   useEffect(() => {
-    if (!parsed) return;
-    externalSyncRef.current = true;
-    setNodes((parsed.nodes || []).map(toRfNode));
-    setEdges((parsed.edges || []).map(toRfEdge));
-    // 短暂后清掉标记（下一帧 ReactFlow 不再回传变更）
-    requestAnimationFrame(() => { externalSyncRef.current = false; });
-  }, [body, setNodes, setEdges]);
-
-  // 选中节点：从本地 nodes state 找，不再从 parsed（parsed 永远是字符串化的 body，可能延迟一拍）
-  const selectedNode = useMemo(() => {
-    if (!selectedNodeId) return null;
-    return nodes.find((n) => n.id === selectedNodeId) || null;
-  }, [selectedNodeId, nodes]);
+    try {
+      new Function(body.replace(/^export\s+default\s+/m, '').replace(/^export\s+/gm, ''));
+      setError(null);
+    } catch (e) {
+      setError('语法错误: ' + (e.message || e));
+    }
+  }, [body]);
 
   const refresh = useCallback(async () => {
     setList(await api('/api/workflows'));
   }, []);
   useEffect(() => { refresh().catch(() => setList([])); }, [refresh]);
 
-  // ── 画布事件 ────────────────────────────────────────────────────
+  // ── 保存 ──────────────────────────────────────────────────────────
 
-  const onConnect = useCallback((c) => {
-    setEdges((eds) => addEdge({ ...c, id: `${c.source}->${c.target}` }, eds));
-  }, [setEdges]);
-
-  const onDrop = useCallback((e) => {
-    e.preventDefault();
-    const raw = e.dataTransfer.getData('application/x-nx-node');
-    if (!raw) return;
-    const tmpl = JSON.parse(raw);
-    const rect = wrapperRef.current.getBoundingClientRect();
-    const id = newId(nodes);
-    setNodes((ns) => [
-      ...ns,
-      {
-        id,
-        type: tmpl.kind,
-        position: { x: Math.round(e.clientX - rect.left - 60), y: Math.round(e.clientY - rect.top - 24) },
-        data: { ...defaultsFor(tmpl.kind), ...stripKind(tmpl), id },
-      },
-    ]);
-    setSelectedNodeId(id);
-  }, [nodes, setNodes]);
-
-  const onDragOver = useCallback((e) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
-  }, []);
-
-  // 画布 onNodesChange：position/dimension 变化走本地 state；删除/添加 也走。
-  // 写回 body 用 rAF 合并，避免每帧多次 setState 触发 derived 重算。
-  const handleNodesChange = useCallback((changes) => {
-    onNodesChange(changes);
-    if (externalSyncRef.current) return; // 外部同步进来的，不写回
-    // 用 raf 合并到下一帧
-    requestAnimationFrame(() => {
-      setBody((cur) => {
-        try { return syncNodesToBody(JSON.parse(cur), nodes, edges); }
-        catch { return cur; }
-      });
-    });
-  }, [onNodesChange, nodes, edges, setBody]);
-
-  const handleEdgesChange = useCallback((changes) => {
-    onEdgesChange(changes);
-    if (externalSyncRef.current) return;
-    requestAnimationFrame(() => {
-      setBody((cur) => {
-        try { return syncEdgesToBody(JSON.parse(cur), edges); }
-        catch { return cur; }
-      });
-    });
-  }, [onEdgesChange, edges, setBody]);
-
-  // ── 选中节点的属性编辑 ──────────────────────────────────────────
-
-  const updateNode = (patch) => {
-    if (!selectedNodeId) return;
-    setNodes((ns) => ns.map((n) => {
-      if (n.id !== selectedNodeId) return n;
-      const merged = { ...n.data, ...patch, id: n.id, kind: patch.kind || n.data.kind };
-      // id 改了同步更新 selectedNodeId
-      if (patch.id && patch.id !== selectedNodeId) {
-        setSelectedNodeId(patch.id);
-        return { ...n, id: patch.id, data: merged };
-      }
-      return { ...n, data: merged };
-    }));
-  };
-
-  const removeNode = (id) => {
-    setNodes((ns) => ns.filter((n) => n.id !== id));
-    setEdges((es) => es.filter((e) => e.source !== id && e.target !== id));
-    setSelectedNodeId(null);
-  };
-
-  // ── CRUD on store ───────────────────────────────────────────────
-
-  const apply = () =>
+  const save = () =>
     guard(async () => {
-      if (error || !parsed) { toast('JSON 校验失败：' + error); return; }
+      if (error) { toast('JS 有语法错误，请先修正'); return; }
+      const fsp = await import('node:fs/promises');
+      const dir = '.nx-rp-workflows';
+      await fsp.mkdir(dir, { recursive: true });
+      const fname = `${dir}/${name}.mjs`;
+      await fsp.writeFile(fname, body, 'utf8');
+      setFileName(fname);
       try {
-        await api('/api/workflows/apply', { method: 'POST', body: parsed });
-        toast('已写入当前 cwd scope');
-        await refresh();
-      } catch (e) { toast('写入失败: ' + e.message); }
+        await api('/api/workflows/' + encodeURIComponent(name), { method: 'PUT', body: { file: fname } });
+      } catch (e) {
+        if (String(e.message).includes('404') || String(e.message).includes('NOT_FOUND')) {
+          await api('/api/workflows', { method: 'POST', body: { name, file: fname } });
+        } else { throw e; }
+      }
+      toast('已保存');
+      await refresh();
     });
 
   const load = (w) =>
     guard(async () => {
-      const full = await api('/api/workflows/' + encodeURIComponent(w.name));
-      setBody(JSON.stringify(full, null, 2));
-      setSelectedNodeId(null);
+      const fsp = await import('node:fs/promises');
+      if (!w.sourceFile) { toast('该工作流没有 sourceFile 记录'); return; }
+      setBody(await fsp.readFile(w.sourceFile, 'utf8'));
+      setName(w.name);
+      setFileName(w.sourceFile);
+      setEvents([]);
+      setRfNodes([]); setRfEdges([]);
       toast('已加载 ' + w.name);
-    });
+    }).catch((e) => { toast('加载失败: ' + e.message); });
 
-  const removeWf = (w) =>
+  const remove = (w) =>
     guard(async () => {
       const ok = await dialog({ title: `删除「${w.name}」？`, danger: true, okText: '删除' });
       if (!ok) return;
@@ -261,132 +187,196 @@ function WorkflowInner() {
       await refresh();
     });
 
-  // ── 渲染 ────────────────────────────────────────────────────────
+  // ── 运行：SSE 流 → 画布 ──────────────────────────────────────────
+
+  const run = () =>
+    guard(async () => {
+      if (error) { toast('JS 有语法错误，请先修正'); return; }
+      const fsp = await import('node:fs/promises');
+      const dir = '.nx-rp-workflows';
+      await fsp.mkdir(dir, { recursive: true });
+      const fname = fileName || `${dir}/${name}.mjs`;
+      await fsp.writeFile(fname, body, 'utf8');
+      setFileName(fname);
+      setEvents([]);
+      setRfNodes([]); setRfEdges([]);
+      setSelected(null);
+      setRunning(true);
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+
+      try {
+        const res = await fetch('/api/workflows/run/' + encodeURIComponent(name) + '?file=' + encodeURIComponent(fname), {
+          signal: ctrl.signal,
+        });
+        if (!res.ok || !res.body) throw new Error('运行失败: HTTP ' + res.status);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf('\n\n')) >= 0) {
+            const frame = buf.slice(0, idx);
+            buf = buf.slice(idx + 2);
+            const ev = parseFrame(frame);
+            if (ev) applyEvent(ev);
+          }
+        }
+      } catch (e) {
+        if (e?.name !== 'AbortError') toast('运行失败: ' + (e?.message || e));
+      } finally {
+        setRunning(false);
+        abortRef.current = null;
+      }
+    });
+
+  // SSE 事件 → React Flow 节点/边
+  const applyEvent = (ev) => {
+    setEvents((arr) => [...arr, { ...ev, at: Date.now() }]);
+    if (ev.event === 'graph') {
+      const laid = layoutWithDagre(
+        ev.data.nodes.map(toRfNode),
+        ev.data.edges.map(toRfEdge),
+      );
+      setRfNodes(laid);
+      setRfEdges(ev.data.edges.map(toRfEdge));
+    } else if (ev.event === 'nodeStart') {
+      setRfNodes((ns) => ns.map((n) => n.id === ev.data.id ? { ...n, data: { ...n.data, status: 'running', startedAt: Date.now() } } : n));
+    } else if (ev.event === 'nodeDone') {
+      const ok = ev.data.ok;
+      setRfNodes((ns) => ns.map((n) => n.id === ev.data.id ? {
+        ...n, data: { ...n.data, status: ok ? 'success' : 'error', ms: ev.data.ms, payload: ev.data.error || ev.data.data },
+      } : n));
+    }
+  };
+
+  const stop = () => abortRef.current?.abort();
+
+  // ── 渲染 ──────────────────────────────────────────────────────────
 
   return (
-    <div className="wf-root">
+    <div>
       <div className="wf-toolbar">
-        <button className="btn small primary" onClick={apply} disabled={!!error || !parsed}>应用到当前 scope</button>
-        <button className="btn small ghost" onClick={() => { setBody(STARTER); setSelectedNodeId(null); }}>重置</button>
+        <input className="wf-name" placeholder="工作流名" value={name} onChange={(e) => setName(e.target.value)} />
+        <button className="btn small primary" onClick={save} disabled={!!error}>保存</button>
+        <button className="btn small" onClick={run} disabled={!!error || running}>
+          {running ? '运行中…' : '运行'}
+        </button>
+        {running && <button className="btn small ghost" onClick={stop}>停止</button>}
+        <button className="btn small ghost" onClick={() => { setBody(STARTER); setEvents([]); }}>模板</button>
         <span style={{ flex: 1 }} />
-        {error
-          ? <span className="bad">{error}</span>
-          : parsed
-            ? <span className="muted">{parsed.name} · {parsed.type} · {nodes.length} 节点 / {edges.length} 边</span>
-            : null}
-        <button className="btn small ghost" onClick={() => setShowJson((v) => !v)}>{showJson ? '收起 JSON' : '展开 JSON'}</button>
+        <span className="muted">
+          {error ? <span className="bad">{error}</span>
+            : <span className="muted">JS 校验通过 · {events.length} 事件</span>}
+        </span>
         <span className="muted">scope: <code>{scopeKey}</code></span>
       </div>
 
-      <div className="wf-body">
-        <aside className="wf-palette">
-          <div className="wf-side-title">palette · 拖到画布</div>
-          {PALETTE.map((p) => (
-            <div key={p.kind}
-              className="wf-palette-item"
-              draggable
-              onDragStart={(e) => {
-                e.dataTransfer.setData('application/x-nx-node', JSON.stringify(p.defaults()));
-                e.dataTransfer.effectAllowed = 'copy';
-              }}
-              title={p.desc}>
-              <div className="wf-palette-kind">{p.kind}</div>
-              <div className="muted" style={{ fontSize: 11 }}>{p.desc}</div>
-            </div>
-          ))}
-        </aside>
-
-        <div className="wf-canvas-wrap" ref={wrapperRef} onDrop={onDrop} onDragOver={onDragOver}>
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={NODE_TYPES}
-            onNodesChange={handleNodesChange}
-            onEdgesChange={handleEdgesChange}
-            onConnect={onConnect}
-            onNodeClick={(_, n) => setSelectedNodeId(n.id)}
-            onPaneClick={() => setSelectedNodeId(null)}
-            minZoom={0.2}
-            maxZoom={2}
-            proOptions={{ hideAttribution: true }}
-          >
-            <Background gap={16} size={1} />
-            <Controls />
-            <MiniMap pannable zoomable />
-          </ReactFlow>
-          {nodes.length === 0 && (
-            <div className="wf-canvas-empty">从左侧 palette 拖一个节点到这里</div>
-          )}
-        </div>
-
-        <aside className="wf-side">
-          <div className="wf-side-title">已保存</div>
-          {!list ? <div className="muted">加载中…</div>
-            : list.length === 0 ? <div className="muted">（暂无）</div>
+      <div className="cols" style={{ display: 'grid', gridTemplateColumns: '220px 1fr 1fr', gap: 14, alignItems: 'flex-start' }}>
+        {/* 左：已保存 */}
+        <div className="card">
+          <div className="colhead"><span>已保存</span><span className="muted">{list ? `${list.length} 条` : ''}</span></div>
+          {!list ? <div className="empty">加载中…</div>
+            : list.length === 0 ? <div className="empty">（暂无）</div>
             : list.map((w) => (
-              <div key={w.name} className="wf-list-row">
-                <div>
+              <div key={w.name} className="row" style={{ gap: 6 }}>
+                <div className="name" style={{ flex: 1 }}>
                   <div>{w.name}</div>
-                  <div className="muted" style={{ fontSize: 11 }}>{w.type} · {w.nodes} 节 / {w.edges} 边</div>
+                  <div className="muted" style={{ fontSize: 11 }}>{(w.createdAt || '').slice(0, 19)}</div>
                 </div>
-                <div style={{ display: 'flex', gap: 4 }}>
+                <div className="acts">
                   <button className="btn small ghost" onClick={() => load(w)}>加载</button>
-                  <button className="btn small ghost danger" onClick={() => removeWf(w)}>删除</button>
+                  <button className="btn small ghost danger" onClick={() => remove(w)}>删除</button>
                 </div>
               </div>
             ))}
-          {selectedNode && (
-            <>
-              <div className="wf-side-divider" />
-              <NodeInspector node={selectedNode} onChange={updateNode} onDelete={() => removeNode(selectedNode.id)} />
-            </>
+        </div>
+
+        {/* 中：JS 编辑器 */}
+        <div className="card">
+          <div className="colhead"><span>JS</span><span className="muted">{body.length} 字符</span></div>
+          <textarea
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            spellCheck={false}
+            rows={20}
+            style={{
+              width: '100%', padding: 12, fontFamily: 'ui-monospace, Consolas, monospace',
+              fontSize: 13, border: 'none', outline: 'none', resize: 'vertical',
+              background: 'var(--paper)', lineHeight: 1.5,
+            }}
+          />
+        </div>
+
+        {/* 右：画布 */}
+        <div className="card" style={{ padding: 0, overflow: 'hidden', minHeight: 460 }}>
+          {rfNodes.length === 0 ? (
+            <div className="muted" style={{ padding: 16, textAlign: 'center' }}>
+              {running ? '运行中，画布即将出现…' : '点「运行」看图'}
+            </div>
+          ) : (
+            <ReactFlow
+              nodes={rfNodes}
+              edges={rfEdges.map(edgeStyle)}
+              nodeTypes={NODE_TYPES}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onNodeClick={(_, n) => setSelected(n)}
+              fitView
+              minZoom={0.4}
+              maxZoom={1.6}
+              proOptions={{ hideAttribution: true }}
+            >
+              <Background gap={16} size={1} />
+              <Controls />
+            </ReactFlow>
           )}
-        </aside>
+        </div>
       </div>
 
-      {showJson && (
-        <div className="wf-json">
-          <textarea value={body} onChange={(e) => setBody(e.target.value)} spellCheck={false} rows={10}
-            style={{ width: '100%', fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 12, padding: 10, border: 'none', outline: 'none', resize: 'vertical' }} />
+      {selected && (
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="colhead"><span>选中节点</span>
+            <button className="btn small ghost" onClick={() => setSelected(null)}>关闭</button></div>
+          <pre style={{ padding: 10, fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 12 }}>
+{JSON.stringify(selected, null, 2)}
+          </pre>
         </div>
       )}
 
-      <div style={{ marginTop: 12 }}>
-        <CliHints module="workflow" />
+      <div className="card" style={{ marginTop: 12 }}>
+        <div className="colhead">
+          <span>事件流</span>
+          <span className="muted">{events.length} 个事件</span>
+        </div>
+        <div className="wf-run-body">
+          {events.length === 0 ? <span className="muted">尚未运行</span>
+            : events.map((e, i) => (
+              <div key={i} className={'wf-ev wf-ev-' + e.event}>
+                <span className="wf-ev-tag">{e.event}</span>
+                <span className="wf-ev-data">{JSON.stringify(e.data).slice(0, 200)}</span>
+              </div>
+            ))}
+        </div>
       </div>
+
+      <div style={{ marginTop: 12 }}><CliHints module="workflow" /></div>
       {dialogNode}
     </div>
   );
 }
 
-// ─── 工具 ────────────────────────────────────────────────────────────
-
-function newId(nodes) {
-  let i = nodes.length + 1;
-  while (nodes.some((n) => n.id === 'n' + i)) i++;
-  return 'n' + i;
-}
-
-function defaultsFor(kind) {
-  if (kind === 'nxAction') return { actionId: 'link.list', params: {} };
-  if (kind === 'agent-call') return { command: 'claude', prompt: '', params: {} };
-  if (kind === 'http') return { method: 'GET', url: '', headers: {}, body: '', params: {} };
-  return { params: {} };
-}
-
-// 从 palette 的 defaults() 对象中剥离 kind 字段，其余都作为节点数据
-function stripKind(tmpl) {
-  const out = {};
-  for (const k of Object.keys(tmpl)) if (k !== 'kind' && tmpl[k] !== undefined) out[k] = tmpl[k];
-  return out;
-}
+// ─── 工具 ──────────────────────────────────────────────────────────────
 
 function toRfNode(n) {
   return {
     id: n.id,
-    type: n.kind, // 节点 kind 直接当 ReactFlow node type
-    position: n.position || { x: 0, y: 0 },
-    data: { id: n.id, kind: n.kind, ...stripKind(n) },
+    type: n.type || 'raw',
+    position: { x: 0, y: 0 }, // dagre 重新算
+    data: { id: n.id, name: n.name, type: n.type || 'raw', status: n.status || 'idle' },
   };
 }
 
@@ -395,102 +385,45 @@ function toRfEdge(e) {
     id: e.id || `${e.source}->${e.target}`,
     source: e.source,
     target: e.target,
+    data: { type: e.type, blocking: e.blocking },
   };
 }
 
-// 从 ReactFlow 的 nodes/edges state 反向写到 body。
-// 这是画布 → body 的同步通道——避免每次都重算整个 JSON 字符串。
-function syncNodesToBody(o, rfNodes, _rfEdges) {
-  o.nodes = rfNodes.map((n) => {
-    const d = n.data || {};
-    // 重建「干净的」节点对象（去掉 ReactFlow 内部字段 type/position 等元数据）
-    const out = {
-      id: n.id,
-      kind: n.type || d.kind,
+// 按 edge type 加视觉样式：seq 实线，parallel 虚线双箭头，conditional 虚线
+function edgeStyle(e) {
+  if (e.data?.type === 'parallel') {
+    return {
+      ...e,
+      style: { strokeDasharray: '6 4', stroke: '#999' },
+      markerEnd: { type: MarkerType.Arrow, color: '#999' },
+      markerStart: { type: MarkerType.Arrow, color: '#999' },
     };
-    // 拷贝 data 里的字段（id / kind 已上提，避免重复）
-    for (const k of Object.keys(d)) {
-      if (k === 'id' || k === 'kind') continue;
-      out[k] = d[k];
+  }
+  if (e.data?.type === 'conditional') {
+    return {
+      ...e,
+      style: { strokeDasharray: '3 3', stroke: '#888' },
+      label: '?',
+      markerEnd: { type: MarkerType.Arrow, color: '#888' },
+    };
+  }
+  // seq：默认实线
+  return {
+    ...e,
+    style: { stroke: '#333' },
+    markerEnd: { type: MarkerType.Arrow, color: '#333' },
+  };
+}
+
+function parseFrame(frame) {
+  let event = 'message';
+  let data = null;
+  for (const line of frame.split('\n')) {
+    if (line.startsWith('event:')) event = line.slice(6).trim();
+    else if (line.startsWith('data:')) {
+      const raw = line.slice(5).trim();
+      try { data = JSON.parse(raw); } catch { data = raw; }
     }
-    out.position = n.position;
-    return out;
-  });
-  return JSON.stringify(o, null, 2);
-}
-
-function syncEdgesToBody(o, rfEdges) {
-  o.edges = rfEdges.map((e) => ({ id: e.id, source: e.source, target: e.target }));
-  return JSON.stringify(o, null, 2);
-}
-
-// ─── 节点属性检视器 ──────────────────────────────────────────────────
-
-function NodeInspector({ node, onChange, onDelete }) {
-  const set = (k, v) => onChange({ [k]: v });
-  return (
-    <div className="wf-inspector">
-      <div className="wf-side-title">
-        节点 · {node.id}
-        <button className="btn small ghost" style={{ float: 'right' }} onClick={onDelete}>移除</button>
-      </div>
-      <Field label="id">
-        <input value={node.id} onChange={(e) => set('id', e.target.value)} />
-      </Field>
-      <Field label="kind">
-        <select value={node.kind} onChange={(e) => onChange({ kind: e.target.value })}>
-          {['nxAction', 'agent-call', 'http'].map((k) => <option key={k} value={k}>{k}</option>)}
-        </select>
-      </Field>
-
-      {node.kind === 'nxAction' && (
-        <Field label="actionId (nx-rp 命令 id)">
-          <input value={node.actionId || ''} onChange={(e) => set('actionId', e.target.value)} placeholder="例: link.list" />
-        </Field>
-      )}
-      {node.kind === 'agent-call' && (
-        <>
-          <Field label="command (agent CLI)">
-            <input value={node.command || ''} onChange={(e) => set('command', e.target.value)} placeholder="claude / codex / iflow" />
-          </Field>
-          <Field label="prompt">
-            <textarea value={node.prompt || ''} onChange={(e) => set('prompt', e.target.value)} rows={4}
-              style={{ width: '100%', padding: 6, fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 12 }} />
-          </Field>
-        </>
-      )}
-      {node.kind === 'http' && (
-        <>
-          <Field label="method">
-            <select value={node.method || 'GET'} onChange={(e) => set('method', e.target.value)}>
-              {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => <option key={m} value={m}>{m}</option>)}
-            </select>
-          </Field>
-          <Field label="url">
-            <input value={node.url || ''} onChange={(e) => set('url', e.target.value)} placeholder="https://..." />
-          </Field>
-          <Field label="headers (JSON)">
-            <textarea value={JSON.stringify(node.headers || {}, null, 0)} onChange={(e) => {
-              try { set('headers', JSON.parse(e.target.value || '{}')); } catch { /* ignore */ }
-            }} rows={2}
-              style={{ width: '100%', padding: 6, fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 12 }} />
-          </Field>
-          <Field label="body (字符串)">
-            <textarea value={typeof node.body === 'string' ? node.body : JSON.stringify(node.body || '', null, 0)}
-              onChange={(e) => set('body', e.target.value)} rows={3}
-              style={{ width: '100%', padding: 6, fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 12 }} />
-          </Field>
-        </>
-      )}
-    </div>
-  );
-}
-
-function Field({ label, children }) {
-  return (
-    <label style={{ display: 'block', marginBottom: 10 }}>
-      <span className="muted" style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>{label}</span>
-      {children}
-    </label>
-  );
+  }
+  return data === null ? null : { event, data };
 }
