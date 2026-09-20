@@ -1,0 +1,1 @@
+export default async function run(ctx) { await ctx.parallel({ "������": () => ctx.nx("link.list"), "���ĵ�": () => ctx.nx("doc.list") }); await ctx.step("����", () => ctx.nx("system.health")); }

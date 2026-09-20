@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.8 / 2026-09-20
+
+- 修「画布看不到图」：ReactFlow 容器从 minHeight: 460 改为 height: 480 + position: relative
+  （React Flow 内部 height:100%，父级只有 minHeight 时高度解析为 0，画布整体塌缩不可见）
+
 ## 0.1.7 / 2026-09-20
 
 - 修 t.mkdir is not a function：浏览器侧 view.jsx 不再 import('node:fs/promises')

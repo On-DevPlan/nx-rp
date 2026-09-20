@@ -296,8 +296,8 @@ function WorkflowInner() {
           />
         </div>
 
-        {/* 右：画布 */}
-        <div className="card" style={{ padding: 0, overflow: 'hidden', minHeight: 460 }}>
+        {/* 右：画布（必须固定 height——.react-flow 是 height:100%，父级只有 minHeight 时高度解析为 0） */}
+        <div className="card" style={{ padding: 0, overflow: 'hidden', height: 480, position: 'relative' }}>
           {rfNodes.length === 0 ? (
             <div className="muted" style={{ padding: 16, textAlign: 'center' }}>
               {running ? '运行中，画布即将出现…' : '点「运行」看图'}
