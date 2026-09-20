@@ -4,6 +4,7 @@ import App from './App.jsx';
 import { StoreProvider } from './store.jsx';
 import { ToastProvider } from './components/ui.jsx';
 import './style.css';
+import 'reactflow/dist/style.css';
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

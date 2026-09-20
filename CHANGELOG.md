@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.2 / 2026-09-20
+
+- workflow 面板加 React Flow 可视化画布
+  - 左 palette（4 种节点模板：nxAction / agent-call / http）拖拽入画布
+  - 中 ReactFlow 画布（自定义节点显示 kind + 关键参数）
+  - 右 选中节点的属性表单（按 kind 推导字段）
+  - 底 JSON 折叠预览（手敲 JSON 也会反映到画布）
+- 画布与 JSON 双向同步：拖拽 / 移动 / 连线 / 改属性 → 写回 body 字符串
+
 ## 0.1.1 / 2026-09-20
 
 - 定位明确为 npx-repo（外部信息以链接方式管理）
