@@ -1,10 +1,14 @@
-# nx-rp
+# nx-rp（npx-repo）
 
-外部资源链接器 + 工作流编排器（CLI + Web 面板）。
+**外部信息以链接方式管理，让项目开发更轻。**
 
-- 给当前项目（cwd）登记一组**外部资源链接**（URL / OpenAPI / 工具入口）
-- 整理**上下文文档**（Markdown 短文）
-- 编排**工作流**（节点 + 边），一键执行
+`nx-rp` = `npx-repo` 的缩写。给当前项目（cwd）一组**链接**，把所有「项目用得着但不该放进来」的东西（外部 API 入口、工具面板、上下文文档、CI 仪表盘、Slack 工作区、第三方脚本入口……）统一登记在 `~/.nx-rp/store.json`，按 cwd 自动隔离 scope。
+
+- **链接（link）**：URL / OpenAPI / CLI 入口 / 工具面板——只存元信息，不抓取内容
+- **文档（doc）**：上下文 Markdown 短文——给 agent 当 prompt 上下文
+- **工作流（workflow）**：节点 + 边编排；可视化或 JSON，4 种节点类型（nxAction / agent-call / http）
+
+CLI 与 Web 面板同源（一条 action 同时声明 CLI 与 HTTP）。agent 通过 CLI 自助管理：写文件 → `workflow validate` → `workflow apply`。
 
 存储：`~/.nx-rp/store.json`（全局），按 cwd 自动隔离 scope。
 
@@ -13,10 +17,10 @@ GitHub: https://github.com/On-DevPlan/nx-rp
 ## 快速开始
 
 ```bash
-npm install -g nx-rp        # 或 pnpm add -g
-npx nx-rp serve             # 打开 http://127.0.0.1:7820
-nx-rp skill install         # 把内置 skill 装到 ~/.claude/skills
-nx-rp routes                # 看 CLI ↔ Web 路由对照
+npx nx-rp serve               # 打开 http://127.0.0.1:7820
+npx nx-rp skill install       # 把内置 skill 装到 ~/.claude/skills
+npx nx-rp link add --name "GitHub API" --url "https://api.github.com"
+npx nx-rp routes              # 看 CLI ↔ Web 路由对照
 ```
 
 ## 命令速查

@@ -1,7 +1,7 @@
 {
   "name": "nx-rp",
-  "version": "0.1.0",
-  "description": "nx-rp — 外部资源链接器 + 工作流编排器（cli + web 面板）",
+  "version": "0.1.1",
+  "description": "nx-rp（npx-repo）—— 外部信息以链接方式管理：link / doc / workflow 三个域，CLI + Web 面板同源，按 cwd 自动隔离 scope",
   "type": "module",
   "bin": {
     "nx-rp": "bin/nx-rp.mjs"
