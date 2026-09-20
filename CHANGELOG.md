@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.5 / 2026-09-20
+
+- 修画布拖动节点闪烁：nodes/edges 改用本地 state（useNodesState/useEdgesState），
+  body 不再作为 derived source；外部变更（load / reset / apply）才同步进画布。
+- 修右栏 UI 一致性：「已保存」列表始终显示；选中节点时在列表下方追加 Inspector，
+  而不是互斥切换。两条信息不再互不可见。
+- 清理掉几条无意义的 eslint-disable 注释（项目没装 react-hooks plugin）。
+
 ## 0.1.4 / 2026-09-20
 
 - 补 `nx-rp skill install` 命令（之前漏注册）

@@ -10,7 +10,8 @@
 // JSON 修改（手敲）也会反映到画布——但只在受控模式下做：画布是「真」，JSON 是「投影」。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ReactFlow, Background, Controls, Handle, MiniMap, Position,
-  ReactFlowProvider, addEdge, applyEdgeChanges, applyNodeChanges,
+  ReactFlowProvider, addEdge,
+  useNodesState, useEdgesState,
 } from '@xyflow/react';
 import { api } from '../../web/frontend/api/client.js';
 import { useDialog, useGuard, useToast } from '../../web/frontend/components/ui.jsx';
@@ -120,37 +121,45 @@ function WorkflowInner() {
     try { return JSON.parse(body); } catch { return null; }
   }, [body, error]);
 
-  const nodes = useMemo(() => (parsed?.nodes || []).map(toRfNode), [parsed]);
-  const edges = useMemo(() => (parsed?.edges || []).map(toRfEdge), [parsed]);
+  // nodes/edges 走本地 state，ReactFlow 直接用——避免「body → derived nodes」
+  // 导致每次 onNodesChange 重算整个数组，节点身份变 → ReactFlow 重挂载 → 闪烁。
+  // 同步方向：
+  //   外部变更（load / reset / apply 后）→ 从 parsed 同步进 nodesState
+  //   画布事件（onNodesChange / onConnect / palette 拖入 / 属性编辑）→ 写 nodesState + 写回 body
+  const initialNodes = useMemo(() => (parsed?.nodes || []).map(toRfNode), []); // 仅首次
+  const initialEdges = useMemo(() => (parsed?.edges || []).map(toRfEdge), []); // 仅首次
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+
+  // 当 body 是「外部来源」（load / reset / apply 成功）变化时，把 parsed 同步进 nodes/edges
+  // 通过 ref 标记「外部同步中」，避免 onNodesChange 再把它写回 body 形成回环。
+  const externalSyncRef = useRef(false);
+
+  useEffect(() => {
+    if (!parsed) return;
+    externalSyncRef.current = true;
+    setNodes((parsed.nodes || []).map(toRfNode));
+    setEdges((parsed.edges || []).map(toRfEdge));
+    // 短暂后清掉标记（下一帧 ReactFlow 不再回传变更）
+    requestAnimationFrame(() => { externalSyncRef.current = false; });
+  }, [body, setNodes, setEdges]);
+
+  // 选中节点：从本地 nodes state 找，不再从 parsed（parsed 永远是字符串化的 body，可能延迟一拍）
+  const selectedNode = useMemo(() => {
+    if (!selectedNodeId) return null;
+    return nodes.find((n) => n.id === selectedNodeId) || null;
+  }, [selectedNodeId, nodes]);
 
   const refresh = useCallback(async () => {
     setList(await api('/api/workflows'));
   }, []);
   useEffect(() => { refresh().catch(() => setList([])); }, [refresh]);
 
-  // 选中节点
-  const selectedNode = useMemo(() => {
-    if (!selectedNodeId) return null;
-    return (parsed?.nodes || []).find((n) => n.id === selectedNodeId) || null;
-  }, [selectedNodeId, parsed]);
-
   // ── 画布事件 ────────────────────────────────────────────────────
 
-  const onNodesChange = useCallback((changes) => {
-    setBody((cur) => patchNodes(JSON.parse(cur), changes));
-  }, []);
-
-  const onEdgesChange = useCallback((changes) => {
-    setBody((cur) => patchEdges(JSON.parse(cur), changes));
-  }, []);
-
   const onConnect = useCallback((c) => {
-    setBody((cur) => {
-      const o = JSON.parse(cur);
-      o.edges = addEdge({ ...c, id: `${c.source}->${c.target}` }, o.edges || []);
-      return JSON.stringify(o, null, 2);
-    });
-  }, []);
+    setEdges((eds) => addEdge({ ...c, id: `${c.source}->${c.target}` }, eds));
+  }, [setEdges]);
 
   const onDrop = useCallback((e) => {
     e.preventDefault();
@@ -158,49 +167,68 @@ function WorkflowInner() {
     if (!raw) return;
     const tmpl = JSON.parse(raw);
     const rect = wrapperRef.current.getBoundingClientRect();
-    const id = newId(parsed?.nodes || []);
-    setBody((cur) => {
-      const o = JSON.parse(cur);
-      o.nodes = o.nodes || [];
-      o.nodes.push({
+    const id = newId(nodes);
+    setNodes((ns) => [
+      ...ns,
+      {
         id,
-        kind: tmpl.kind,
+        type: tmpl.kind,
         position: { x: Math.round(e.clientX - rect.left - 60), y: Math.round(e.clientY - rect.top - 24) },
-        ...defaultsFor(tmpl.kind),
-        // 已有 defaults 字段优先（拖出来已经是完整节点）
-      });
-      // 把 tmpl 的字段也写进来
-      for (const k of Object.keys(tmpl)) {
-        if (k !== 'kind' && tmpl[k] !== undefined) o.nodes[o.nodes.length - 1][k] = tmpl[k];
-      }
-      return JSON.stringify(o, null, 2);
-    });
+        data: { ...defaultsFor(tmpl.kind), ...stripKind(tmpl), id },
+      },
+    ]);
     setSelectedNodeId(id);
-  }, [parsed]);
+  }, [nodes, setNodes]);
 
   const onDragOver = useCallback((e) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
   }, []);
 
+  // 画布 onNodesChange：position/dimension 变化走本地 state；删除/添加 也走。
+  // 写回 body 用 rAF 合并，避免每帧多次 setState 触发 derived 重算。
+  const handleNodesChange = useCallback((changes) => {
+    onNodesChange(changes);
+    if (externalSyncRef.current) return; // 外部同步进来的，不写回
+    // 用 raf 合并到下一帧
+    requestAnimationFrame(() => {
+      setBody((cur) => {
+        try { return syncNodesToBody(JSON.parse(cur), nodes, edges); }
+        catch { return cur; }
+      });
+    });
+  }, [onNodesChange, nodes, edges, setBody]);
+
+  const handleEdgesChange = useCallback((changes) => {
+    onEdgesChange(changes);
+    if (externalSyncRef.current) return;
+    requestAnimationFrame(() => {
+      setBody((cur) => {
+        try { return syncEdgesToBody(JSON.parse(cur), edges); }
+        catch { return cur; }
+      });
+    });
+  }, [onEdgesChange, edges, setBody]);
+
   // ── 选中节点的属性编辑 ──────────────────────────────────────────
 
   const updateNode = (patch) => {
     if (!selectedNodeId) return;
-    setBody((cur) => {
-      const o = JSON.parse(cur);
-      o.nodes = o.nodes.map((n) => n.id === selectedNodeId ? { ...n, ...patch } : n);
-      return JSON.stringify(o, null, 2);
-    });
+    setNodes((ns) => ns.map((n) => {
+      if (n.id !== selectedNodeId) return n;
+      const merged = { ...n.data, ...patch, id: n.id, kind: patch.kind || n.data.kind };
+      // id 改了同步更新 selectedNodeId
+      if (patch.id && patch.id !== selectedNodeId) {
+        setSelectedNodeId(patch.id);
+        return { ...n, id: patch.id, data: merged };
+      }
+      return { ...n, data: merged };
+    }));
   };
 
   const removeNode = (id) => {
-    setBody((cur) => {
-      const o = JSON.parse(cur);
-      o.nodes = (o.nodes || []).filter((n) => n.id !== id);
-      o.edges = (o.edges || []).filter((e) => e.source !== id && e.target !== id);
-      return JSON.stringify(o, null, 2);
-    });
+    setNodes((ns) => ns.filter((n) => n.id !== id));
+    setEdges((es) => es.filter((e) => e.source !== id && e.target !== id));
     setSelectedNodeId(null);
   };
 
@@ -273,8 +301,8 @@ function WorkflowInner() {
             nodes={nodes}
             edges={edges}
             nodeTypes={NODE_TYPES}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
+            onNodesChange={handleNodesChange}
+            onEdgesChange={handleEdgesChange}
             onConnect={onConnect}
             onNodeClick={(_, n) => setSelectedNodeId(n.id)}
             onPaneClick={() => setSelectedNodeId(null)}
@@ -292,9 +320,27 @@ function WorkflowInner() {
         </div>
 
         <aside className="wf-side">
-          {selectedNode
-            ? <NodeInspector node={selectedNode} onChange={updateNode} onDelete={() => removeNode(selectedNode.id)} />
-            : <SavedList list={list} onLoad={load} onRemove={removeWf} />}
+          <div className="wf-side-title">已保存</div>
+          {!list ? <div className="muted">加载中…</div>
+            : list.length === 0 ? <div className="muted">（暂无）</div>
+            : list.map((w) => (
+              <div key={w.name} className="wf-list-row">
+                <div>
+                  <div>{w.name}</div>
+                  <div className="muted" style={{ fontSize: 11 }}>{w.type} · {w.nodes} 节 / {w.edges} 边</div>
+                </div>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button className="btn small ghost" onClick={() => load(w)}>加载</button>
+                  <button className="btn small ghost danger" onClick={() => removeWf(w)}>删除</button>
+                </div>
+              </div>
+            ))}
+          {selectedNode && (
+            <>
+              <div className="wf-side-divider" />
+              <NodeInspector node={selectedNode} onChange={updateNode} onDelete={() => removeNode(selectedNode.id)} />
+            </>
+          )}
         </aside>
       </div>
 
@@ -328,12 +374,19 @@ function defaultsFor(kind) {
   return { params: {} };
 }
 
+// 从 palette 的 defaults() 对象中剥离 kind 字段，其余都作为节点数据
+function stripKind(tmpl) {
+  const out = {};
+  for (const k of Object.keys(tmpl)) if (k !== 'kind' && tmpl[k] !== undefined) out[k] = tmpl[k];
+  return out;
+}
+
 function toRfNode(n) {
   return {
     id: n.id,
     type: n.kind, // 节点 kind 直接当 ReactFlow node type
     position: n.position || { x: 0, y: 0 },
-    data: { ...n },
+    data: { id: n.id, kind: n.kind, ...stripKind(n) },
   };
 }
 
@@ -345,28 +398,29 @@ function toRfEdge(e) {
   };
 }
 
-function patchNodes(o, changes) {
-  // 用 rf 的 applyNodeChanges 在我们自己的节点格式上跑——多写一层 adapter
-  const rfNodes = (o.nodes || []).map(toRfNode);
-  const next = applyNodeChanges(changes, rfNodes);
-  o.nodes = next.map((rn) => {
-    const orig = (o.nodes || []).find((n) => n.id === rn.id) || {};
-    // 删除
-    if (rn.type === 'remove' || (changes.find?.((c) => c.id === rn.id && c.type === 'remove'))) return null;
-    return { ...orig, id: rn.id, position: rn.position, kind: rn.data.kind };
-  }).filter(Boolean);
+// 从 ReactFlow 的 nodes/edges state 反向写到 body。
+// 这是画布 → body 的同步通道——避免每次都重算整个 JSON 字符串。
+function syncNodesToBody(o, rfNodes, _rfEdges) {
+  o.nodes = rfNodes.map((n) => {
+    const d = n.data || {};
+    // 重建「干净的」节点对象（去掉 ReactFlow 内部字段 type/position 等元数据）
+    const out = {
+      id: n.id,
+      kind: n.type || d.kind,
+    };
+    // 拷贝 data 里的字段（id / kind 已上提，避免重复）
+    for (const k of Object.keys(d)) {
+      if (k === 'id' || k === 'kind') continue;
+      out[k] = d[k];
+    }
+    out.position = n.position;
+    return out;
+  });
   return JSON.stringify(o, null, 2);
 }
 
-function patchEdges(o, changes) {
-  const rfEdges = (o.edges || []).map(toRfEdge);
-  const next = applyEdgeChanges(changes, rfEdges);
-  // 把 id 映射回我们自己的 id（rf 改的 id 可能不同）
-  const idMap = new Map((o.edges || []).map((e) => [`${e.source}->${e.target}`, e.id || `${e.source}->${e.target}`]));
-  o.edges = next.map((re) => {
-    const id = idMap.get(re.id) || `${re.source}->${re.target}`;
-    return { id, source: re.source, target: re.target };
-  });
+function syncEdgesToBody(o, rfEdges) {
+  o.edges = rfEdges.map((e) => ({ id: e.id, source: e.source, target: e.target }));
   return JSON.stringify(o, null, 2);
 }
 
@@ -429,28 +483,6 @@ function NodeInspector({ node, onChange, onDelete }) {
         </>
       )}
     </div>
-  );
-}
-
-function SavedList({ list, onLoad, onRemove }) {
-  return (
-    <>
-      <div className="wf-side-title">已保存</div>
-      {!list ? <div className="muted">加载中…</div>
-        : list.length === 0 ? <div className="muted">（暂无）</div>
-        : list.map((w) => (
-          <div key={w.name} className="wf-list-row">
-            <div>
-              <div>{w.name}</div>
-              <div className="muted" style={{ fontSize: 11 }}>{w.type} · {w.nodes} 节 / {w.edges} 边</div>
-            </div>
-            <div style={{ display: 'flex', gap: 4 }}>
-              <button className="btn small ghost" onClick={() => onLoad(w)}>加载</button>
-              <button className="btn small ghost danger" onClick={() => onRemove(w)}>删除</button>
-            </div>
-          </div>
-        ))}
-    </>
   );
 }
 

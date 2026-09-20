@@ -87,7 +87,8 @@ input:focus, select:focus { outline: none; border-color: var(--soft-2); box-shad
 .wf-canvas-node-kind { font-family: ui-monospace, Consolas, monospace; font-size: 10px; color: var(--mid); text-transform: uppercase; letter-spacing: .5px; }
 .wf-canvas-node-title { font-family: ui-monospace, Consolas, monospace; font-size: 12px; font-weight: 600; margin-top: 2px; }
 
-.wf-inspector { font-size: 13px; }
+.wf-inspector { font-size: 13px; margin-top: 10px; }
+.wf-side-divider { border-top: 1px solid var(--soft-2); margin: 10px 0; }
 .wf-list-row { display: flex; align-items: center; gap: 6px; padding: 4px 0; border-bottom: 1px solid var(--soft-2); }
 .wf-list-row:last-child { border-bottom: 0; }
 .wf-list-row > div:first-child { flex: 1; min-width: 0; }
