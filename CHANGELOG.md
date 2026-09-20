@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3 / 2026-09-20
+
+- 修画布不渲染：reactflow 11.11.4 在 React 19 下不兼容
+- 换成 @xyflow/react@12.11.6（v12 是为 React 19 设计的；API 与 v11 几乎一致）
+- workflow 面板样式补齐（之前 css append 失败，wf-* 规则全缺失）
+
 ## 0.1.2 / 2026-09-20
 
 - workflow 面板加 React Flow 可视化画布

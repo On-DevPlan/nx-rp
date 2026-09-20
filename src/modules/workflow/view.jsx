@@ -9,10 +9,9 @@
 // 双向同步：画布上拖拽 / 移动 / 连线 → 写回 body 字符串 → 实时校验。
 // JSON 修改（手敲）也会反映到画布——但只在受控模式下做：画布是「真」，JSON 是「投影」。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import ReactFlow, {
-  Background, Controls, Handle, MiniMap, Position,
+import { ReactFlow, Background, Controls, Handle, MiniMap, Position,
   ReactFlowProvider, addEdge, applyEdgeChanges, applyNodeChanges,
-} from 'reactflow';
+} from '@xyflow/react';
 import { api } from '../../web/frontend/api/client.js';
 import { useDialog, useGuard, useToast } from '../../web/frontend/components/ui.jsx';
 import { CliHints } from '../../web/frontend/components/CliHints.jsx';
@@ -279,13 +278,17 @@ function WorkflowInner() {
             onConnect={onConnect}
             onNodeClick={(_, n) => setSelectedNodeId(n.id)}
             onPaneClick={() => setSelectedNodeId(null)}
-            fitView
+            minZoom={0.2}
+            maxZoom={2}
             proOptions={{ hideAttribution: true }}
           >
             <Background gap={16} size={1} />
             <Controls />
             <MiniMap pannable zoomable />
           </ReactFlow>
+          {nodes.length === 0 && (
+            <div className="wf-canvas-empty">从左侧 palette 拖一个节点到这里</div>
+          )}
         </div>
 
         <aside className="wf-side">
