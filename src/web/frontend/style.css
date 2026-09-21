@@ -70,11 +70,29 @@ input:focus, select:focus { outline: none; border-color: var(--soft-2); box-shad
 .modal-body { padding: 16px; overflow: auto; }
 
 .card { padding: 0; border: var(--border); border-radius: 4px; }
+/* 卡片之间用间距分隔，不用投影。限定 .stack 上下文——全局 .card + .card 会把
+   workflow 三栏 grid 里的兄弟卡片顶下去（它们是并排不是堆叠）。 */
+.card + .card { margin-top: 14px; }
+.cols > .card + .card { margin-top: 0; }
 .colhead { display: flex; align-items: center; justify-content: space-between; padding: 0 12px; height: 28px; border-bottom: var(--border); font-size: 13px; font-weight: 600; }
 .empty { color: var(--mid); padding: 18px 4px; }
 .empty code { background: var(--soft); padding: 1px 5px; border-radius: 4px; }
 .copyable { cursor: copy; }
 .copyable:hover { background: var(--soft); }
+
+/* ---- 通用：工具栏 / 状态标签 / 键值表 / CLI 等价提示 ---- */
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.tag { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 999px;
+  background: var(--soft); color: var(--mid); font-size: 11px; }
+.tag.strong { background: var(--ink); color: var(--paper); }
+.tag.bad { background: var(--bad); color: #fff; }
+.kv { margin: 0; }
+.kv-row { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--soft-2); }
+.kv-row:last-child { border-bottom: 0; }
+.kv dt { color: var(--mid); font-size: 11px; width: 72px; flex-shrink: 0; }
+.kv dd { margin: 0; min-width: 0; padding: 6px 0; font-size: var(--fs-core); display: flex; align-items: center; }
+.cli-hint { color: var(--mid); font-size: 11px; display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+.cli-cmd { font-family: ui-monospace, Consolas, monospace; color: var(--ink); }
 
 /* ---- workflow 面板 ---- */
 .wf-root { display: flex; flex-direction: column; min-height: 480px; }

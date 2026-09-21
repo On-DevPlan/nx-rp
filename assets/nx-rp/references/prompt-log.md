@@ -29,6 +29,10 @@ nx-rp hook log --json        # 机器可读
 nx-rp hook capture           # hook 落点（stdin 收事件 JSON；永不报错、退出码恒 0）
 ```
 
+**面板等价**：`nx-rp serve` 后「提示词日志」页有同构操作——开关状态卡片（含
+`disableAllHooks` 警告）、记录表格、启用 / 停用按钮（停用走确认弹窗）。
+面板调的是同一条 `hook.*` action，不存在第二份逻辑。
+
 日志文件：`~/.nx-rp/prompts/<cwd哈希>.jsonl`，每行：
 
 ```json

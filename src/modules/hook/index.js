@@ -1,17 +1,25 @@
 // hook 模块 action 声明：capture（hook 落点）/ on / off / status / log。
 //
 // capture 的 run 永不抛错——hook 协议里非零退出码会在 transcript 留错误记录，
-// 日志类 hook 的存在感必须是零。on/off/status/log 是普通 CLI 命令，错误正常上抛。
+// 日志类 hook 的存在感必须是零。on/off/status/log 是普通命令，错误正常上抛。
 //
-// 纯 CLI（http: null）：capture 没有页面按钮的意义，settings.json 也只该被
-// 显式的 hook on/off 改——面板不提供开关，避免「面板显示已开但文件被人手改」的漂移。
+// capture 是唯一 cli-only 的 action：它的入参形态是 hook 协议的 stdin 事件 JSON，
+// 面板没有对应交互。其余四条都 http 可达——面板与 CLI 走同一份逻辑。
 import * as service from './service.js';
+
+// --limit 归一化：非正数/NaN → 50（「没给有效条数」的默认），合法值封顶 1000。
+// 负数走默认而不是钳到 1——原样透传负数会让 slice 丢掉最新/最早的一批记录。
+function normalizeLimit(v) {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n) || n <= 0) return 50;
+  return Math.min(n, 1000);
+}
 
 export default {
   id: 'hook',
   title: '提示词日志',
   order: 50,
-  view: null,
+  view: () => import('./view.jsx'),
 
   actions: [
     {
@@ -30,7 +38,7 @@ export default {
     {
       id: 'hook.on',
       cli: ['hook', 'on'],
-      http: null,
+      http: ['POST', '/api/hook/on'],
       summary: '往 ~/.claude/settings.json 写 UserPromptSubmit hook（幂等；--dry-run 只预览）',
       flags: { dryRun: { type: 'boolean', hint: '只预览，不写盘' } },
       run: (ctx) => service.hookOn({ dryRun: !!ctx.dryRun }),
@@ -43,7 +51,7 @@ export default {
     {
       id: 'hook.off',
       cli: ['hook', 'off'],
-      http: null,
+      http: ['POST', '/api/hook/off'],
       summary: '从 ~/.claude/settings.json 摘掉我们的 hook（其余 hooks 不动；--dry-run 只预览）',
       flags: { dryRun: { type: 'boolean', hint: '只预览，不写盘' } },
       run: (ctx) => service.hookOff({ dryRun: !!ctx.dryRun }),
@@ -56,7 +64,7 @@ export default {
     {
       id: 'hook.status',
       cli: ['hook', 'status'],
-      http: null,
+      http: ['GET', '/api/hook/status'],
       summary: '看 hook 开关状态与日志目录',
       run: () => service.hookStatus(),
       render: (r) =>
@@ -67,13 +75,14 @@ export default {
     {
       id: 'hook.log',
       cli: ['hook', 'log'],
-      http: null,
+      http: ['GET', '/api/hook/log'],
       summary: '查提示词记录（默认当前 cwd，--all 跨目录，--limit N 条）',
+      // 读命令的 flag 一律不带 default——「不传」本身是有意义的输入（默认当前 cwd）
       flags: {
         all: { type: 'boolean', hint: '跨全部目录' },
         limit: { type: 'number', hint: '条数（默认 50）' },
       },
-      run: (ctx) => service.listPrompts({ all: !!ctx.all, limit: ctx.limit || 50 }),
+      run: (ctx) => service.listPrompts({ all: !!ctx.all, limit: normalizeLimit(ctx.limit) }),
       render: (list) => {
         if (!list.length) return '（暂无记录——在启用 hook 的会话里发一条提示词后再来）';
         return list

@@ -22,6 +22,12 @@ test('smoke: registry 装载自检通过、三端命令表可生成', async () =
   for (const id of ['hook.capture', 'hook.on', 'hook.off', 'hook.status', 'hook.log']) {
     assert.ok(ids.has(id), `缺 action: ${id}`);
   }
+  // 面板操作必须有 HTTP 可达的同源路由（capture 是 hook 协议专属，cli-only）
+  const httpById = new Map(ACTIONS.map((a) => [a.id, a.http]));
+  for (const id of ['hook.on', 'hook.off', 'hook.status', 'hook.log']) {
+    assert.ok(Array.isArray(httpById.get(id)), `${id} 缺 HTTP 路由，面板无法调用`);
+  }
+  assert.equal(httpById.get('hook.capture'), null, 'capture 是 stdin 协议入口，不应暴露 HTTP');
 });
 
 test('smoke: hook status/log 只读路径可用（临时目录重定向，不碰真实数据）', async () => {

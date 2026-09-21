@@ -6,4 +6,5 @@ export const VIEWS = [
   { id: 'link', title: '链接', component: lazy(() => import('../../modules/link/view.jsx')) },
   { id: 'doc', title: '文档', component: lazy(() => import('../../modules/doc/view.jsx')) },
   { id: 'workflow', title: '工作流', component: lazy(() => import('../../modules/workflow/view.jsx')) },
+  { id: 'hook', title: '提示词日志', component: lazy(() => import('../../modules/hook/view.jsx')) },
 ];

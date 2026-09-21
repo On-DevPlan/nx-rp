@@ -7,7 +7,7 @@
 - **链接（link）**：URL / OpenAPI / CLI 入口 / 工具面板——只存元信息，不抓取内容
 - **文档（doc）**：上下文 Markdown 短文——给 agent 当 prompt 上下文
 - **工作流（workflow）**：节点 + 边编排；可视化或 JSON，4 种节点类型（nxAction / agent-call / http）
-- **提示词日志（hook）**：Claude Code UserPromptSubmit hook——每次提交的提示词按目录记进本地 JSONL
+- **提示词日志（hook）**：Claude Code UserPromptSubmit hook——每次提交的提示词按目录记进本地 JSONL；面板里有「提示词日志」页
 
 CLI 与 Web 面板同源（一条 action 同时声明 CLI 与 HTTP）。agent 通过 CLI 自助管理：写文件 → `workflow validate` → `workflow apply`。
 

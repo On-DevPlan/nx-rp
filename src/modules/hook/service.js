@@ -43,17 +43,33 @@ function findOwnGroups(settings) {
 
 // ─── on / off / status ─────────────────────────────────────────────
 
-// 写 settings 前留可回滚快照（同目录、时间戳命名）；on/off 都是破坏性写，先快照再动手。
+// 写 settings 前留可回滚快照（同目录、时间戳命名）。快照失败视为前置条件失败——
+// 「先快照再动手」的保证不能在快照环节悄悄失效。写完轮转，只留最近 KEEP 份，
+// 否则反复 on/off 会在 ~/.claude/ 里线性堆积文件。
+const SNAPSHOT_KEEP = 5;
+const SNAPSHOT_PREFIX = 'settings.json.nx-rp-bak-';
+
 async function snapshotSettings() {
+  let raw;
   try {
-    const raw = await fsp.readFile(CLAUDE_SETTINGS_PATH, 'utf8');
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const snap = `${CLAUDE_SETTINGS_PATH}.nx-rp-bak-${stamp}`;
-    await fsp.writeFile(snap, raw, 'utf8');
-    return snap;
-  } catch {
-    return null; // 原文件不存在，无需快照
+    raw = await fsp.readFile(CLAUDE_SETTINGS_PATH, 'utf8');
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return null; // 原文件不存在，无需快照
+    throw e;
   }
+  const dir = dirname(CLAUDE_SETTINGS_PATH);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const snap = join(dir, SNAPSHOT_PREFIX + stamp);
+  await fsp.writeFile(snap, raw, 'utf8');
+  // 轮转：按文件名排序（时间戳命名保证字典序=时间序），超出的删旧
+  const olds = (await fsp.readdir(dir))
+    .filter((f) => f.startsWith(SNAPSHOT_PREFIX))
+    .sort()
+    .slice(0, -SNAPSHOT_KEEP);
+  for (const f of olds) {
+    await fsp.rm(join(dir, f), { force: true }).catch(() => {}); // 清理失败不影响主流程
+  }
+  return snap;
 }
 
 export async function hookOn({ dryRun = false } = {}) {
@@ -99,30 +115,51 @@ export async function hookOff({ dryRun = false } = {}) {
 }
 
 export async function hookStatus() {
-  const settings = await readSettings();
+  let settings;
+  let corrupt = false;
+  try {
+    settings = await readSettings();
+  } catch {
+    settings = {};   // 只读路径降级：不抛，但如实标注
+    corrupt = true;
+  }
   const own = findOwnGroups(settings);
   return {
     enabled: own.length > 0,
     settingsPath: CLAUDE_SETTINGS_PATH,
     logDir: PROMPTS_DIR,
     disableAllHooks: settings.disableAllHooks === true,
+    corrupt,
   };
 }
 
+// 读 settings。刻意区分三种情形：
+//   文件不存在 → {}（用户显式开关动作，允许创建）
+//   读失败（权限等）→ 上抛（不许带着空对象走写盘路径）
+//   JSON 损坏 → 上抛（绝不能拿 {hooks} 覆盖用户全部配置——permissions/env 全在里面）
 async function readSettings() {
+  let raw;
   try {
-    const raw = await fsp.readFile(CLAUDE_SETTINGS_PATH, 'utf8');
+    raw = await fsp.readFile(CLAUDE_SETTINGS_PATH, 'utf8');
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return {};
+    throw e;
+  }
+  try {
     const data = JSON.parse(raw);
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('not an object');
     return data;
   } catch {
-    return {}; // 不存在：从空对象起步（用户显式开关动作，允许创建文件）
+    const err = new Error(`settings.json 无法解析（${CLAUDE_SETTINGS_PATH}）——请先修复该文件再执行 hook on/off`);
+    err.code = 'INVALID_INPUT';
+    throw err;
   }
 }
 
 async function writeSettings(data) {
   await fsp.mkdir(dirname(CLAUDE_SETTINGS_PATH), { recursive: true });
-  const tmp = CLAUDE_SETTINGS_PATH + '.tmp';
+  // tmp 名带 pid：并发写者（CLI + 面板同时点）不该共用同一个 tmp 文件
+  const tmp = `${CLAUDE_SETTINGS_PATH}.${process.pid}.tmp`;
   await fsp.writeFile(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
   await fsp.rename(tmp, CLAUDE_SETTINGS_PATH);
 }

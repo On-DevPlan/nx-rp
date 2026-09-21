@@ -140,6 +140,54 @@ test('hook on/off 写前留快照', async () => {
   assert.ok(r2.snapshot);
 });
 
+test('settings.json 损坏 → hook on/off 拒绝写入（绝不覆盖用户配置）', async () => {
+  await mkdir(join(tmp, 'claude'), { recursive: true });
+  await writeFile(settingsPath, '{"env": {"A": "1"', 'utf8'); // 截断的 JSON
+  const mod = await import(serviceUrl());
+  await assert.rejects(() => mod.hookOn(), /无法解析/);
+  await assert.rejects(() => mod.hookOff(), /无法解析/);
+  // 原文未被覆盖
+  assert.equal(await readFile(settingsPath, 'utf8'), '{"env": {"A": "1"');
+  // status 降级不抛，但如实标注 corrupt
+  const st = await mod.hookStatus();
+  assert.equal(st.corrupt, true);
+  assert.equal(st.enabled, false);
+});
+
+test('快照轮转：只保留最近 5 份', async () => {
+  await seedSettings({ n: 0 });
+  const mod = await import(serviceUrl());
+  for (let i = 1; i <= 7; i++) {
+    await writeFile(settingsPath, JSON.stringify({ n: i }), 'utf8'); // 每轮改变原文，保证快照内容不同
+    await mod.hookOn();
+    await mod.hookOff();
+  }
+  const dir = join(tmp, 'claude');
+  const snaps = (await (await import('node:fs/promises')).readdir(dir))
+    .filter((f) => f.startsWith('settings.json.nx-rp-bak-'));
+  assert.ok(snaps.length <= 5, `快照应轮转到 5 份以内，实际 ${snaps.length}`);
+});
+
+test('listPrompts 的 limit 在 action 层归一化：负数/NaN 回落 50，超大封顶', async () => {
+  await mod_captureTwo();
+  // 走 action 层（归一化所在位置），模拟 CLI 传了 --limit=-5
+  const { ACTIONS } = await import(pathToFileURL(join(ROOT, 'src', 'runtime', 'registry.js')).href);
+  const logAction = ACTIONS.find((a) => a.id === 'hook.log');
+  const res = await logAction.run({ all: true, limit: -5 });
+  assert.equal(res.length, 2, '负 limit 回落默认 50，不得丢记录');
+  const big = await logAction.run({ all: true, limit: 99999 });
+  assert.equal(big.length, 2, '超大 limit 封顶 1000，不得丢记录');
+  const nan = await logAction.run({ all: true, limit: NaN });
+  assert.equal(nan.length, 2, 'NaN 回落默认 50');
+});
+
+async function mod_captureTwo() {
+  const mod = await import(serviceUrl());
+  const dir = join(tmp, 'lim'); // 同一 cwd → 同一个日志文件，两条记录才可比
+  await mod.captureRecord({ prompt: 'p1', cwd: dir });
+  await mod.captureRecord({ prompt: 'p2', cwd: dir });
+}
+
 test('captureRaw：事件 JSON → 追加一行 JSONL；坏输入静默丢弃', async () => {
   const mod = await import(serviceUrl());
   const bad = await mod.captureRaw('not json');

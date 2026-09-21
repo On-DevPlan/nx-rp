@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.1 / 2026-09-21
+
+- hook 模块补 Web 面板（此前 view: null + 全 http: null，面板里看不到）：
+  - 新增 `view.jsx`「提示词日志」页：开关状态卡片（含 disableAllHooks 警告）、
+    记录表格（跨目录勾选、查看原文弹窗）、启用 / 停用按钮（停用走确认弹窗）
+  - `hook.on` / `hook.off` / `hook.status` / `hook.log` 补 HTTP 路由
+    （POST /api/hook/{on,off}、GET /api/hook/{status,log}），面板与 CLI 走同一份逻辑
+  - `hook.capture` 保持 cli-only：它的入参是 hook 协议的 stdin 事件 JSON，面板无对应交互
+  - 前端 registry 登记 hook 视图
+- style.css 补通用类：.toolbar / .tag（状态标签）/ .kv（键值表）/ .cli-hint（CLI 等价提示）
+  / .card + .card 分隔
+- smoke 补断言：面板操作必须 http 可达、capture 必须保持 cli-only
+- 开发体验：
+  - `pnpm dev` 改为 `scripts/dev.mjs` 启动器——一条命令起 vite(5180) + 后端(7820)，
+    任意一个挂掉一并收尾，一个 ctrl-c 一起退；vite 显式 `--host 127.0.0.1`
+    （Node 18+ 默认监听 [::1]，否则 curl 127.0.0.1 会 ECONNREFUSED）
+  - 新增 `pnpm run link:local`：把全局 nx-rp 指向本仓库的 dev shim。
+    两种模式——`--mode=volta`（pack + volta install tarball，零 PATH 改动）
+    / `--mode=shim`（写转发脚本，改代码即时生效）。默认 dry-run，`--unlink` 还原。
+    改 PATH 前先做防御性校验（%VAR% 展开风险 / setx 1024 字符截断），
+    不满足则中止并提示手动操作
+
 ## 0.2.0 / 2026-09-21
 
 - 新增 hook 模块（纯 CLI，http: null）：

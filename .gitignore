@@ -3,4 +3,5 @@ src/web/public/
 *.log
 .DS_Store
 .env
-.env.local
+.env.local.nx-rp-workflows/
+*.tgz
