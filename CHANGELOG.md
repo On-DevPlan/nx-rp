@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.2 / 2026-09-21
+
+- hook 面板新增「手动添加」卡片：
+  - 可一键复制的 hook JSON 片段（点代码块或按钮均可复制）——片段由 service 的
+    manualSnippet() 生成，与 hook on 实际写入的 entry 同源，并有单测断言防两处漂移
+    （片段不含内部 marker 指纹，手写场景不需要）
+  - 配置层级说明表：用户级 ~/.claude/settings.json / 项目级 .claude/settings.json /
+    本地级 .claude/settings.local.json，各自影响范围与「合并而非覆盖」规则，
+    附 /hooks 排查提示
+- hook.status 返回值带 snippet 字段（GET /api/hook/status，面板数据源）
+
 ## 0.2.1 / 2026-09-21
 
 - hook 模块补 Web 面板（此前 view: null + 全 http: null，面板里看不到）：

@@ -34,6 +34,19 @@ function hasMarker(group) {
   return typeof group === 'object' && group !== null && group[MARKER] === true;
 }
 
+// 手动添加用的 JSON 片段（面板展示 + 复制）。与 hookOn 写盘的 entry 从同一组常量生成——
+// 面板上的代码和工具实际写进 settings.json 的永远一致，不会两处硬编码漂移。
+// 片段不含 marker 字段：那是本工具识别自己条目的内部指纹，手写场景不需要。
+export function manualSnippet() {
+  return {
+    hooks: {
+      UserPromptSubmit: [
+        { matcher: '', hooks: [hookEntry()] },
+      ],
+    },
+  };
+}
+
 // 在 hooks.UserPromptSubmit 数组里找我们的组（按 marker 识别，不看 command 细节）。
 function findOwnGroups(settings) {
   const groups = settings?.hooks?.UserPromptSubmit;
@@ -130,6 +143,7 @@ export async function hookStatus() {
     logDir: PROMPTS_DIR,
     disableAllHooks: settings.disableAllHooks === true,
     corrupt,
+    snippet: manualSnippet(), // 面板「手动添加」卡片直接展示这段 JSON
   };
 }
 

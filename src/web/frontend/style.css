@@ -94,6 +94,16 @@ input:focus, select:focus { outline: none; border-color: var(--soft-2); box-shad
 .cli-hint { color: var(--mid); font-size: 11px; display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
 .cli-cmd { font-family: ui-monospace, Consolas, monospace; color: var(--ink); }
 
+/* hook 面板：手动添加卡片 */
+.snippet-box { display: block; border: 1px solid var(--soft-2); border-radius: 4px; background: var(--soft);
+  padding: 8px 10px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.snippet-box pre { font: inherit; }
+table.levels { border-collapse: collapse; width: 100%; font-size: var(--fs-core); }
+table.levels th { text-align: left; color: var(--mid); font-weight: 600; }
+table.levels th, table.levels td { height: var(--row-h); padding: 0 8px 0 0; border-bottom: 1px solid var(--soft-2); }
+table.levels tbody tr:last-child td { border-bottom: 0; }
+table.levels td.mono { font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
+
 /* ---- workflow 面板 ---- */
 .wf-root { display: flex; flex-direction: column; min-height: 480px; }
 .wf-toolbar { display: flex; gap: 8px; align-items: center; padding: 6px 0 10px; flex-wrap: wrap; }
