@@ -1,6 +1,6 @@
 ---
 name: nx-rp
-description: nx-rp（npx-repo）—— 给当前项目用「链接」管理外部信息。当用户需要给某个项目登记一组外部资源链接（URL / OpenAPI / 工具面板 / Slack 频道）、整理上下文文档、或编排工作流（agent 用 JS 写 .mjs 文件，nx-rp 直接执行，SSE 流式输出进度）时使用。触发词：外部链接、外部资源整理、上下文文档、工作流编排、workflow、scope、cwd 作用域、nx-rp、npx-repo。
+description: nx-rp（npx-repo）—— 给当前项目用「链接」管理外部信息。当用户需要给某个项目登记一组外部资源链接（URL / OpenAPI / 工具面板 / Slack 频道）、整理上下文文档、或编排工作流（agent 用 JS 写 .mjs 文件，nx-rp 直接执行，SSE 流式输出进度）时使用。触发词：外部链接、外部资源整理、上下文文档、工作流编排、workflow、scope、cwd 作用域、nx-rp、npx-repo、提示词日志、prompt log、hook。
 ---
 
 # nx-rp — 给当前项目接一组外部资源 + 编排工作流
@@ -14,6 +14,17 @@ description: nx-rp（npx-repo）—— 给当前项目用「链接」管理外�
 1. **`link`** — 登记外部资源链接（URL / OpenAPI 入口 / 工具入口 / Slack 频道）
 2. **`doc`** — 写上下文文档（Markdown 短文）；agent 拿来当 prompt 上下文
 3. **`workflow`** — 编排工作流；**agent 用 JS 写 `.mjs` 文件**（AI 生成 JS 质量远超 JSON），nx-rp 加载并执行，SSE 流式输出 nodeStart / nodeDone / log / done 事件
+
+另有 **`hook`**（纯 CLI）：一条 Claude Code UserPromptSubmit hook，把每个会话里用户提交的提示词按目录记进 `~/.nx-rp/prompts/<cwd哈希>.jsonl`：
+
+```
+nx-rp hook on      # 往 ~/.claude/settings.json 写 hook（幂等；async 不阻塞会话）
+nx-rp hook log     # 当前目录的提示词记录（--all 跨目录，--limit N）
+nx-rp hook off     # 停用（只摘自己的 entry，其余 hooks 不动）
+nx-rp hook status  # 开关状态与日志目录
+```
+
+使用与排障详见 [[prompt-log]]；工作流生成详见 [[workflow-author]]。
 
 每个资源的可见性都按 cwd 自动隔离：同一 cwd 看到一致数据，切换目录是不同 scope。
 

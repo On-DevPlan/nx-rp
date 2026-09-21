@@ -7,6 +7,7 @@
 - **链接（link）**：URL / OpenAPI / CLI 入口 / 工具面板——只存元信息，不抓取内容
 - **文档（doc）**：上下文 Markdown 短文——给 agent 当 prompt 上下文
 - **工作流（workflow）**：节点 + 边编排；可视化或 JSON，4 种节点类型（nxAction / agent-call / http）
+- **提示词日志（hook）**：Claude Code UserPromptSubmit hook——每次提交的提示词按目录记进本地 JSONL
 
 CLI 与 Web 面板同源（一条 action 同时声明 CLI 与 HTTP）。agent 通过 CLI 自助管理：写文件 → `workflow validate` → `workflow apply`。
 
@@ -34,6 +35,9 @@ nx-rp bootstrap --json       一次性拿齐上下文
 nx-rp workflow validate <file>
 nx-rp workflow format <file>
 nx-rp workflow apply <file>
+nx-rp hook on                启用提示词日志 hook（写 ~/.claude/settings.json）
+nx-rp hook log               看当前目录的提示词记录（--all 跨目录）
+nx-rp hook off               停用（只摘自己的 entry，其余 hooks 不动）
 ```
 
 加 `--json` 到任何命令得机器可读输出。

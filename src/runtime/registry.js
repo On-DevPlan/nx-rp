@@ -13,8 +13,9 @@ import system from '../modules/system/index.js';
 import link from '../modules/link/index.js';
 import doc from '../modules/doc/index.js';
 import workflow from '../modules/workflow/index.js';
+import hook from '../modules/hook/index.js';
 
-export const MODULES = [system, link, doc, workflow].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
+export const MODULES = [system, link, doc, workflow, hook].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
 
 export const ACTIONS = MODULES.flatMap((m) =>
   (m.actions || []).map((a) => ({ ...a, module: m.id }))

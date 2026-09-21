@@ -1,7 +1,8 @@
 // ESLint 扁平配置。分层约束在这里落地——架构意图写在 README 里活不过三次提交。
 import { defineConfig } from 'eslint/config';
 
-const SIBLINGS = ['system', 'link', 'doc', 'workflow'];
+// 逐模块枚举——新增模块必补，否则该模块静默变成「谁都可以依赖」（无测试会红）。
+const SIBLINGS = ['system', 'link', 'doc', 'workflow', 'hook'];
 
 const BASE_RULES = {
   'no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0 / 2026-09-21
+
+- 新增 hook 模块（纯 CLI，http: null）：
+  - `nx-rp hook on` — 往 ~/.claude/settings.json 写 UserPromptSubmit hook（async + timeout 10s，
+    marker 指纹识别自己的 entry；幂等；他人 hooks 原样保留；settings 其余键不动；
+    写前自动留 .nx-rp-bak-<时间戳> 快照；--dry-run 只预览）
+  - `nx-rp hook off` — 只摘自己的组；hooks 空了连字段一起摘；幂等；同样有快照 + --dry-run
+  - `nx-rp hook status` / `nx-rp hook log`（--all / --limit）
+  - `nx-rp hook capture` — UserPromptSubmit 落点：stdin 事件 JSON → ~/.nx-rp/prompts/<cwd哈希>.jsonl
+    追加一行；任何异常静默吞掉，退出码恒 0（日志 hook 零存在感）
+- paths.js：新增 CLAUDE_SETTINGS_PATH / PROMPTS_DIR / promptsFileFor；
+  normalizeScope 从 cwdScope 拆出可复用；hook 路径用 let + setHookPaths 供测试重定向
+- 按 server-cli-web 闭环表补齐：src/index.js 导出全部 service（含 link/doc/workflow 积欠）、
+  eslint 互依禁列补 ../hook/*（反向测试验证规则真的会红）、
+  smoke 从占位改为真实只读断言、assets/nx-rp/references/prompt-log.md 场景文档
+
 ## 0.1.9 / 2026-09-20
 
 - 修「列表混乱」：.row 补 flex 布局（display: flex / .name / .desc / .acts 子类），
