@@ -74,6 +74,33 @@ export default function HookView() {
 
       <div className="card">
         <div className="colhead">
+          <span>提示词记录</span>
+          <span className="muted">{logs ? `${logs.length} 条` : '加载中…'}</span>
+        </div>
+        <div className="toolbar" style={{ padding: '8px 12px' }}>
+          <button className="btn small" onClick={enable} disabled={!status || status.enabled || status.corrupt}>启用</button>
+          <button className="btn small ghost" onClick={disable} disabled={!status || !status.enabled || status.corrupt}>停用</button>
+          <label className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8 }}>
+            <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} style={{ height: 'auto' }} />
+            跨全部目录
+          </label>
+        </div>
+        {!logs ? <div className="empty">加载中…</div>
+          : logs.length === 0 ? <div className="empty">（暂无记录——在启用 hook 的会话里发一条提示词后再来）</div>
+          : logs.map((r, i) => (
+            <div key={r.ts + i} className="row">
+              <div className="name" style={{ width: 140, flexShrink: 0 }}>{fmt(r.ts)}</div>
+              <div className="desc">{oneLine(r.prompt)}</div>
+              <div className="acts">
+                {all ? <span className="muted" style={{ fontSize: 11 }}>{r.cwd}</span> : null}
+                <button className="btn small ghost" onClick={() => setViewing(r)}>查看</button>
+              </div>
+            </div>
+          ))}
+      </div>
+
+      <div className="card">
+        <div className="colhead">
           <span>Hook 状态</span>
           <span className="muted">{status ? (status.corrupt ? '配置文件异常' : (status.enabled ? '已启用' : '未启用')) : (loadError ? '—' : '加载中…')}</span>
         </div>
@@ -112,33 +139,6 @@ export default function HookView() {
       </div>
 
       <ManualCard snippet={status?.snippet} />
-
-      <div className="card">
-        <div className="colhead">
-          <span>提示词记录</span>
-          <span className="muted">{logs ? `${logs.length} 条` : '加载中…'}</span>
-        </div>
-        <div className="toolbar" style={{ padding: '8px 12px' }}>
-          <button className="btn small" onClick={enable} disabled={!status || status.enabled || status.corrupt}>启用</button>
-          <button className="btn small ghost" onClick={disable} disabled={!status || !status.enabled || status.corrupt}>停用</button>
-          <label className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8 }}>
-            <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} style={{ height: 'auto' }} />
-            跨全部目录
-          </label>
-        </div>
-        {!logs ? <div className="empty">加载中…</div>
-          : logs.length === 0 ? <div className="empty">（暂无记录——在启用 hook 的会话里发一条提示词后再来）</div>
-          : logs.map((r, i) => (
-            <div key={r.ts + i} className="row">
-              <div className="name" style={{ width: 140, flexShrink: 0 }}>{fmt(r.ts)}</div>
-              <div className="desc">{oneLine(r.prompt)}</div>
-              <div className="acts">
-                {all ? <span className="muted" style={{ fontSize: 11 }}>{r.cwd}</span> : null}
-                <button className="btn small ghost" onClick={() => setViewing(r)}>查看</button>
-              </div>
-            </div>
-          ))}
-      </div>
 
       {viewing && (
         <Modal title={fmt(viewing.ts)} onClose={() => setViewing(null)}>
