@@ -6,6 +6,10 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+// 与 scripts/dev.mjs 保持一致：后端端口可被 NX_RP_PORT 覆盖，
+// 否则 NX_RP_PORT=8000 pnpm dev 时前端 API 会全打到 7820。
+const BACKEND_PORT = Number(process.env.NX_RP_PORT) || 7820;
+
 const FRONTEND_ASSET = /\.(jsx?|mjs|cjs|tsx?|css|map|svg|png|jpe?g|webp|ico|woff2?)$/i;
 
 export function shouldServeLocally(url) {
@@ -22,9 +26,10 @@ export default defineConfig({
   },
   server: {
     port: 5180,
+    strictPort: true,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:7820',
+        target: `http://127.0.0.1:${BACKEND_PORT}`,
         bypass: (req) => shouldServeLocally(req.url),
       },
     },

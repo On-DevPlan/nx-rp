@@ -69,11 +69,11 @@ async function waitForPort(port, { tries = 60, gapMs = 250 } = {}) {
   return false;
 }
 
-start('vite', [VITE_BIN, '--host', '127.0.0.1']);
+start('vite', [VITE_BIN, '--host', '127.0.0.1', '--strictPort']);
 const ready = await waitForPort(5180);
 
 if (!ready) {
-  console.error('[dev] vite 在 15 秒内没起来，仍然启动后端；请检查上面的报错。');
+  console.error('[dev] vite 没起来（--strictPort：端口被占会直接失败），仍然启动后端；请检查上面的报错。');
 } else {
   console.log(`\n[dev] vite 就绪 http://127.0.0.1:5180  →  后端 http://127.0.0.1:${BACKEND_PORT}\n`);
 }
