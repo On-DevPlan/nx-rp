@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 / 2026-09-22
+
+- 包名迁移为 @flowot6/nx-rp（npm 主账号 flowot 被封，改用小号 flowot6 的
+  scope 命名发布；scoped 包补 publishConfig.access=public）
+- bin 名不变仍是 nx-rp：`npx @flowot6/nx-rp serve` 用法照旧
+
 ## 0.4.0 / 2026-09-22
 
 - 最近目录（recents）+ 面板 scope 快速切换——一个面板管所有项目：
