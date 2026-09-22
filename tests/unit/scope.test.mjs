@@ -19,7 +19,7 @@ test('ALS: scopeStorage.run 内 cwdScope/cwdDir 读到激活目录，run 外回�
   assert.equal(cwdScope(), normalizeScope(process.cwd()));
   assert.equal(cwdDir(), process.cwd());
 
-  // run 内：scope 归一化（resolve + win 小写），dir 保留原始输入
+  // run 内：scope 归一化（resolve，Windows 上额外小写化），dir 保留原始输入
   await scopeStorage.run({ scope: 'D:\\X\\Proj', dir: 'D:\\X\\Proj' }, async () => {
     assert.equal(cwdScope(), normalizeScope('D:\\X\\Proj'));
     assert.equal(cwdDir(), 'D:\\X\\Proj');
@@ -46,7 +46,10 @@ test('recents: touchRecent 新增置顶 + 重复去重 + 截断 + 落盘', async
     forgetStore();
 
     const a = await touchRecent(join(dir, 'proj-a'));
-    assert.equal(a.scope, a.scope.toLowerCase(), 'win 上 scope key 应归一化为小写');
+    // 不变量：scope key = normalizeScope(路径)。Windows 上会小写化，POSIX 保留原样——
+    // 所以不能断言 toLowerCase()（那是 win 专属行为），要与 normalizeScope 对表。
+    const { normalizeScope } = await import('../../src/core/paths.js');
+    assert.equal(a.scope, normalizeScope(join(dir, 'proj-a')));
     await touchRecent(join(dir, 'proj-b'));
 
     // 重复 touch A：去重置顶，不产生第二条
