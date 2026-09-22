@@ -10,7 +10,8 @@ const ROOT = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '
 
 test('smoke: 包结构合法', async () => {
   const pkg = await import('../package.json', { with: { type: 'json' } });
-  assert.equal(pkg.default.name, '@flowot6/nx-rp');
+  // main 发 nx-rp（主账号命名空间）；flowot6 分支发 @flowot6/nx-rp（小号，见该分支的 smoke）
+  assert.equal(pkg.default.name, 'nx-rp');
   assert.equal(pkg.default.type, 'module');
   assert.equal(pkg.default.bin['nx-rp'], 'bin/nx-rp.mjs');
 });
