@@ -1,0 +1,4 @@
+# 双分支双包名并行：flowot6 分支的 package.json 是 @flowot6/nx-rp，
+# main 是 nx-rp。merge=ours 让合并时无冲突地保留当前分支侧的包名——
+# 前提是本地启用了该 driver（见 README 的「双分支发布」一节与 CI 合并流程）。
+package.json merge=ours

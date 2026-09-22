@@ -65,3 +65,7 @@ jobs:
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_TEMP }}
+
+  # GitHub 网页/API 发起的合并不经过本地 git config，merge=ours driver 不生效——
+  # 合并提交若把 package.json 的包名改丢了，上面的「包名必须 @flowot6/ scope」
+  # 校验会 fail-fast 挡住发布，不会发出错包。
