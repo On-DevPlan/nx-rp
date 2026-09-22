@@ -1,7 +1,8 @@
 // 状态读写：原子写 + 缓存失效。
 //
+// 文件头结构注释同步：recents 是全局列表，不属于任何 scope 桶。
 // 单一 JSON 文件 ~/.nx-rp/store.json，结构：
-//   { version, settings, scopes: { [cwdScope]: { links, docs, workflows } } }
+//   { version, settings, scopes: { [cwdScope]: { links, docs, workflows } }, recents: [...] }
 //
 // 为什么按 cwd 隔离而不是平铺：同一 nx-rp 可能被多个项目用，每项目独立范围；
 // 但用户的所有偏好（设置）还是全局共享 → 拆 settings 与 scopes。
@@ -16,15 +17,22 @@ import { storePathFromEnv, cwdScope as _cwdScope } from './paths.js';
 
 const VERSION = 1;
 
+// recents 最多保留的目录数：够覆盖活跃项目，又不让 store.json 无限膨胀。
+const RECENTS_LIMIT = 20;
+
 const EMPTY = () => ({
   version: VERSION,
   settings: {
     defaultPort: 7820,
     openBrowser: true,
   },
-  // scopes[cwd] = { links: [], docs: [], workflows: {} }
   // 业务集合一律按 cwdScope 索引。
   scopes: {},
+  // 最近使用的工作目录（跨 scope 的全局列表，最近在前）：
+  // recents[i] = { scope, path, lastUsedAt }
+  //   scope = normalizeScope 后的 key（与 scopes 桶同命名空间）
+  //   path  = 原始大小写路径（展示 / fs 用）
+  recents: [],
 });
 
 function normalize(data) {
@@ -36,6 +44,11 @@ function normalize(data) {
     for (const [k, v] of Object.entries(data.scopes)) {
       base.scopes[k] = normalizeScope(v);
     }
+  }
+  if (Array.isArray(data.recents)) {
+    base.recents = data.recents
+      .filter((r) => r && typeof r.scope === 'string')
+      .slice(0, RECENTS_LIMIT);
   }
   return base;
 }

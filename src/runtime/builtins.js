@@ -4,7 +4,7 @@
 // 所以 help 与 routes 不会漏掉它们，也不会出现两张长度不同的「命令表」。
 import { startServer } from './server.js';
 import { openBrowser } from '../core/open.js';
-import { storePathFromEnv } from '../core/paths.js';
+import { storePathFromEnv, cwdScope } from '../core/paths.js';
 import { invalidInput as _invalidInput } from '../core/errors.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -28,18 +28,92 @@ export function commandEntry(action) {
 }
 
 // ---- serve ----
+//
+// 参数解析独立成纯函数：builtin 不走 spec parser，rest 就是裸 token 流；
+// 手写解析的地方越少越好，这里集中一处、可单测。
+// 跳过 `--store <path>` 对：cli.js 的全局解析已把它写进 NX_RP_STORE 并追加进 rest，
+// 不跳过的话它的值会被误当位置端口。
+export function parseServeArgs(rest) {
+  const out = { port: undefined, open: true };
+  const tokens = rest || [];
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (tok === '--store') { i++; continue; }          // 全局 flag 的「名 值」对，跳过值
+    if (tok.startsWith('--store=')) continue;
+    if (tok === '--no-open') { out.open = false; continue; }
+    if (tok === '--port') {
+      const v = tokens[++i];
+      if (v === undefined) throw _invalidInput('用法: nx-rp serve [--port N] [--no-open] —— --port 需要值');
+      out.port = Number(v);
+      if (Number.isNaN(out.port)) throw _invalidInput(`--port 期望数字，收到 ${v}`);
+      continue;
+    }
+    if (tok.startsWith('--port=')) {
+      out.port = Number(tok.slice(7));
+      if (Number.isNaN(out.port)) throw _invalidInput(`--port 期望数字，收到 ${tok.slice(7)}`);
+      continue;
+    }
+    if (tok.startsWith('--')) continue;                // 未知 flag 容忍跳过（与旧行为一致）
+    if (out.port === undefined) out.port = Number(tok); // 第一个位置参数 = 端口
+  }
+  return out;
+}
+
+// 端口上是不是已经在跑一个 nx-rp 面板？/api/health 的 cwdScope 字段就是签名
+// （system/index.js 的 health 一定返回它），外来进程要么 404 要么没有这个字段。
+async function probeNxRp(port) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(1500) });
+    if (!res.ok) return false;
+    const body = await res.json();
+    return !!(body && body.ok && body.data && body.data.cwdScope);
+  } catch {
+    return false;
+  }
+}
+
 async function cmdServe(rest) {
-  const port = Number(rest?.[0]) || Number(process.env.NX_RP_PORT) || 7820;
-  const open = !rest?.includes('--no-open');
+  const { port: portArg, open } = parseServeArgs(rest);
+  const port = portArg || Number(process.env.NX_RP_PORT) || 7820;
 
   // 触发装载期自检
   await import('./registry.js');
   // 这里 import api.js 会触发路由表装载
   await import('./api.js');
 
-  const server = await startServer({ port });
+  let server;
+  try {
+    server = await startServer({ port });
+  } catch (err) {
+    // EADDRINUSE 不是无脑报错：先看看端口上是不是自己的面板。
+    // 是 → 登记当前目录到 recents + 打开浏览器就完事，一个面板管所有项目；
+    // 不是 → 才是真正的端口冲突，让用户换端口。
+    if (err && err.code === 'EADDRINUSE' && await probeNxRp(port)) {
+      const { touchRecent } = await import('../modules/system/index.js');
+      const entry = await touchRecent(process.cwd()).catch(() => null);
+      const url = `http://127.0.0.1:${port}`;
+      console.log(`面板已在运行: ${url}`);
+      console.log(`已登记当前目录: ${entry ? entry.path : process.cwd()}`);
+      if (open) openBrowser(url);
+      return { status: 'reused', port, url };
+    }
+    throw err;
+  }
+
+  // 启动成功：把自己登记进 recents（面板的「最近目录」列表）。
+  // 失败不阻塞启动——recents 是锦上添花，store 只读等异常不该拦住面板。
+  await (async () => {
+    try {
+      const { touchRecent } = await import('../modules/system/index.js');
+      await touchRecent(process.cwd());
+    } catch (e) {
+      console.error(`(recents 登记失败，不影响服务: ${e.message})`);
+    }
+  })();
+
   const url = `http://127.0.0.1:${port}`;
   console.log(`面板:   ${url}`);
+  console.log(`scope:  ${cwdScope()}`);
   console.log(`存储:   ${storePathFromEnv()}`);
   console.log(`加 --json 到所有命令得机器可读输出。Ctrl+C 退出。`);
 
@@ -173,7 +247,7 @@ export const BUILTINS = [
   {
     id: 'serve',
     cli: ['serve'],
-    summary: '启动 Web 面板（默认 :7820；--port N 改端口；--no-open 不开浏览器）',
+    summary: '启动 Web 面板（默认 :7820；--port N 改端口；--no-open 不开浏览器；端口上已有 nx-rp 面板则登记当前目录并直接打开它）',
     run: cmdServe,
     render: () => '',
   },

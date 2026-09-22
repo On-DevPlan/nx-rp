@@ -27,7 +27,7 @@ import fsp from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { isAbsolute, join, resolve, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { cwdScope } from '../../core/paths.js';
+import { cwdScope, cwdDir } from '../../core/paths.js';
 import { loadStore, mutateStore } from '../../core/store.js';
 import { notFound, invalidInput } from '../../core/errors.js';
 
@@ -46,7 +46,10 @@ function workflowsDir() {
 // ─── 校验 ────────────────────────────────────────────────────────────
 
 export async function validateWorkflow(filePath) {
-  const abs = isAbsolute(filePath) ? resolve(filePath) : join(process.cwd(), filePath);
+  // 相对路径基于 cwdDir()：面板切了激活 scope 后，相对路径落到激活目录（保留原始大小写）。
+  // 注意工作流内 spawn 的 agent 执行 cwd 跟随 serve 进程本身，不随激活 scope 变——
+  // 需要在特定目录执行的工作流应显式传 cwd。
+  const abs = isAbsolute(filePath) ? resolve(filePath) : join(cwdDir(), filePath);
   let mod;
   try { mod = await import(pathToFileURL(abs).href); }
   catch (e) { throw invalidInput(`加载失败: ${e.message}`); }
@@ -309,7 +312,7 @@ async function runWorkflowStreamingInto(stream, filePath, _opts = {}) {
   const emit = (ev) => writeFrame(stream, ev);
   const ctx = makeCtx(emit);
   try {
-    const abs = isAbsolute(filePath) ? resolve(filePath) : join(process.cwd(), filePath);
+    const abs = isAbsolute(filePath) ? resolve(filePath) : join(cwdDir(), filePath);
     // 加 mtime query 绕 Node import cache：每次运行都重新加载源码变更
     const cacheBust = `?t=${(await fsp.stat(abs).catch(() => ({ mtimeMs: Date.now() }))).mtimeMs}`;
     const mod = await import(pathToFileURL(abs).href + cacheBust);
@@ -343,7 +346,7 @@ export async function listWorkflows() {
 }
 
 export async function saveWorkflow(name, filePath) {
-  const abs = isAbsolute(filePath) ? resolve(filePath) : join(process.cwd(), filePath);
+  const abs = isAbsolute(filePath) ? resolve(filePath) : join(cwdDir(), filePath);
   let text;
   try { text = await fsp.readFile(abs, 'utf8'); }
   catch (e) {
@@ -359,8 +362,8 @@ export async function saveWorkflow(name, filePath) {
 
 // 内部：把源码写到两处（cwd 内 .nx-rp-workflows/<name>.mjs + scope 内 ~/.nx-rp/<scopeHash>/workflows/<name>.mjs）+ 同步 store metadata
 async function writeWorkflowFiles(name, text) {
-  // 1) cwd 内：让用户能在编辑器里打开看到源码
-  const cwdFile = join(process.cwd(), '.nx-rp-workflows', `${name}.mjs`);
+  // 1) cwd 内：让用户能在编辑器里打开看到源码（cwdDir() = 激活 scope 的原始路径）
+  const cwdFile = join(cwdDir(), '.nx-rp-workflows', `${name}.mjs`);
   await fsp.mkdir(dirname(cwdFile), { recursive: true });
   await fsp.writeFile(cwdFile, text, 'utf8');
   // 2) scope 内：list / run 的真实来源

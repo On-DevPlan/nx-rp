@@ -15,19 +15,29 @@ description: nx-rp（npx-repo）—— 给当前项目用「链接」管理外�
 2. **`doc`** — 写上下文文档（Markdown 短文）；agent 拿来当 prompt 上下文
 3. **`workflow`** — 编排工作流；**agent 用 JS 写 `.mjs` 文件**（AI 生成 JS 质量远超 JSON），nx-rp 加载并执行，SSE 流式输出 nodeStart / nodeDone / log / done 事件
 
-另有 **`hook`**：一条 Claude Code UserPromptSubmit hook，把每个会话里用户提交的提示词按目录记进 `~/.nx-rp/prompts/<cwd哈希>.jsonl`。**CLI 与 Web 面板都能操作**：
+另有 **两个 hook 模块**（与 link / doc / workflow 平级，各自独立 tab 与开关）：
+
+- **`hook-prompt` 提示词日志**：UserPromptSubmit，把每个会话里用户提交的提示词按目录记进
+  `~/.nx-rp/prompts/<cwd哈希>.jsonl`（`hook on` / `hook off` / `hook log`）
+- **`hook-skill` Skill 追踪**：PostToolUse（matcher Skill），把 skill 调用记进
+  `~/.nx-rp/skills/<cwd哈希>.jsonl`，健康分 = 使用量 + 新鲜度（`hook skill-on` / `hook skill-off` / `hook skills`）
+
+两者开关互不影响（各自只动自己 marker 指纹的 settings entry）：
 
 ```
-nx-rp hook on      # 往 ~/.claude/settings.json 写 hook（幂等；async 不阻塞会话）
-nx-rp hook log     # 当前目录的提示词记录（--all 跨目录，--limit N）
-nx-rp hook off     # 停用（只摘自己的 entry，其余 hooks 不动）
-nx-rp hook status  # 开关状态与日志目录
+nx-rp hook on / off          # 提示词日志开关（幂等；写前自动留快照）
+nx-rp hook skill-on / skill-off  # Skill 追踪开关
+nx-rp hook log               # 提示词记录（--all 跨目录，--limit N）
+nx-rp hook skills            # Skill 使用统计与健康分（--all 跨目录）
+nx-rp hook status / skill-status  # 各自的开关状态
 ```
 
-面板上「提示词日志」页能看开关状态、翻记录、开关 hook，与上面命令一一对应。
+面板上「提示词日志」「Skill 追踪」两个 tab 与上述命令一一对应。
 使用与排障详见 [[prompt-log]]；工作流生成详见 [[workflow-author]]。
 
 每个资源的可见性都按 cwd 自动隔离：同一 cwd 看到一致数据，切换目录是不同 scope。
+多项目场景：`nx-rp recents` 列最近目录；面板右上角可一键切换数据范围；
+默认端口上已有面板时再跑 `nx-rp serve` 不会起第二进程，登记当前目录并直接打开。
 
 ## CLI 与 Web 同源
 
@@ -35,7 +45,9 @@ nx-rp hook status  # 开关状态与日志目录
 CLI 可以有 `validate` 这类纯检查命令，Web 没有按钮。
 
 ```
-nx-rp serve                          # 启 :7820 面板（--no-open 不弹浏览器）
+nx-rp serve                          # 启 :7820 面板（--no-open 不弹浏览器；
+                                     #   端口已有 nx-rp 面板则复用它）
+nx-rp recents                        # 最近工作目录（面板快速切换 scope 的数据源）
 nx-rp link list                      # 当前 cwd scope 下的所有链接
 nx-rp doc list
 nx-rp workflow validate --file demo.mjs   # 校验（不写盘）

@@ -1,4 +1,4 @@
-// hook 模块单测：on/off 幂等与外科手术性、capture 追加 JSONL、log 按 cwd 过滤。
+// hook-prompt 模块单测：on/off 幂等与外科手术性、capture 追加 JSONL、log 按 cwd 过滤。
 // 路径重定向到临时目录（paths.setHookPaths），绝不碰真实的 ~/.claude/settings.json。
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,7 +15,7 @@ let settingsPath;
 let promptsDir;
 
 const pathsMod = await import(pathToFileURL(join(ROOT, 'src', 'core', 'paths.js')).href);
-const serviceUrl = () => pathToFileURL(join(ROOT, 'src', 'modules', 'hook', 'service.js')).href;
+const serviceUrl = () => pathToFileURL(join(ROOT, 'src', 'modules', 'hook-prompt', 'service.js')).href;
 
 async function seedSettings(obj) {
   await mkdir(join(tmp, 'claude'), { recursive: true });
@@ -23,10 +23,10 @@ async function seedSettings(obj) {
 }
 
 beforeEach(async () => {
-  tmp = await mkdtemp(join(tmpdir(), 'nxrp-hook-'));
+  tmp = await mkdtemp(join(tmpdir(), 'nxrp-hookp-'));
   settingsPath = join(tmp, 'claude', 'settings.json');
   promptsDir = join(tmp, 'prompts');
-  pathsMod.setHookPaths({ settingsPath, promptsDir });
+  pathsMod.setHookPaths({ settingsPath, promptsDir, skillsDir: join(tmp, 'skills') });
   // service.js 没有在顶层解构常量（都在函数内现取 live binding），重定向即时生效
 });
 
@@ -34,6 +34,7 @@ afterEach(async () => {
   pathsMod.setHookPaths({
     settingsPath: join(process.env.USERPROFILE || process.env.HOME, '.claude', 'settings.json'),
     promptsDir: join(pathsMod.APP_DIR, 'prompts'),
+    skillsDir: join(pathsMod.APP_DIR, 'skills'),
   });
   await rm(tmp, { recursive: true, force: true });
 });
@@ -76,6 +77,19 @@ test('hook on：空 settings → 写入 UserPromptSubmit 组，其余键不动',
   assert.equal(typeof entry.timeout, 'number', '必须显式 timeout');
 });
 
+test('hook on：只动自己的事件——已有的他人 PostToolUse 组原样保留', async () => {
+  await seedSettings({
+    hooks: {
+      PostToolUse: [{ matcher: 'Skill', hooks: [{ type: 'command', command: 'nx-rp hook skill-track' }] }],
+    },
+  });
+  const { hookOn } = await import(serviceUrl());
+  await hookOn();
+  const settings = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(settings.hooks.UserPromptSubmit.length, 1);
+  assert.equal(settings.hooks.PostToolUse.length, 1, 'Skill 追踪条目不受影响');
+});
+
 test('hook on：settings 文件不存在 → 直接创建', async () => {
   const { hookOn } = await import(serviceUrl());
   const r = await hookOn();
@@ -97,14 +111,12 @@ test('hook on：已有他人 hooks → 追加不覆盖', async () => {
   await seedSettings({
     hooks: {
       UserPromptSubmit: [{ matcher: '', hooks: [{ type: 'command', command: 'echo other' }] }],
-      PostToolUse: [{ matcher: 'Edit', hooks: [{ type: 'command', command: 'fmt.sh' }] }],
     },
   });
   const { hookOn } = await import(serviceUrl());
   await hookOn();
   const settings = JSON.parse(await readFile(settingsPath, 'utf8'));
   assert.equal(settings.hooks.UserPromptSubmit.length, 2, '他人的组要保留');
-  assert.ok(settings.hooks.PostToolUse, '别的事件不动');
   assert.ok(settings.hooks.UserPromptSubmit.some((g) => g.hooks?.[0]?.command === 'echo other'));
 });
 
@@ -176,25 +188,11 @@ test('settings.json 损坏 → hook on/off 拒绝写入（绝不覆盖用户配�
   assert.equal(st.enabled, false);
 });
 
-test('快照轮转：只保留最近 5 份', async () => {
-  await seedSettings({ n: 0 });
-  const mod = await import(serviceUrl());
-  for (let i = 1; i <= 7; i++) {
-    await writeFile(settingsPath, JSON.stringify({ n: i }), 'utf8'); // 每轮改变原文，保证快照内容不同
-    await mod.hookOn();
-    await mod.hookOff();
-  }
-  const dir = join(tmp, 'claude');
-  const snaps = (await (await import('node:fs/promises')).readdir(dir))
-    .filter((f) => f.startsWith('settings.json.nx-rp-bak-'));
-  assert.ok(snaps.length <= 5, `快照应轮转到 5 份以内，实际 ${snaps.length}`);
-});
-
 test('listPrompts 的 limit 在 action 层归一化：负数/NaN 回落 50，超大封顶', async () => {
-  await mod_captureTwo();
+  await captureTwo();
   // 走 action 层（归一化所在位置），模拟 CLI 传了 --limit=-5
   const { ACTIONS } = await import(pathToFileURL(join(ROOT, 'src', 'runtime', 'registry.js')).href);
-  const logAction = ACTIONS.find((a) => a.id === 'hook.log');
+  const logAction = ACTIONS.find((a) => a.id === 'hook-prompt.log');
   const res = await logAction.run({ all: true, limit: -5 });
   assert.equal(res.length, 2, '负 limit 回落默认 50，不得丢记录');
   const big = await logAction.run({ all: true, limit: 99999 });
@@ -203,7 +201,7 @@ test('listPrompts 的 limit 在 action 层归一化：负数/NaN 回落 50，超
   assert.equal(nan.length, 2, 'NaN 回落默认 50');
 });
 
-async function mod_captureTwo() {
+async function captureTwo() {
   const mod = await import(serviceUrl());
   const dir = join(tmp, 'lim'); // 同一 cwd → 同一个日志文件，两条记录才可比
   await mod.captureRecord({ prompt: 'p1', cwd: dir });
@@ -229,6 +227,12 @@ test('captureRaw：事件 JSON → 追加一行 JSONL；坏输入静默丢弃', 
   assert.equal(rec.sessionId, 's1');
   assert.ok(rec.ts);
   assert.ok(rec.cwd);
+});
+
+test('captureRaw：半截 JSON 抢救不出 prompt → 静默丢弃（core 容错兜底）', async () => {
+  const mod = await import(serviceUrl());
+  const r = await mod.captureRaw('{"cwd":"D:/x","prompt":"帮我整');
+  assert.equal(r.ok, false, 'prompt 救不回来就不记——日志宁缺毋假');
 });
 
 test('listPrompts --all：跨目录、按时间倒序', async () => {

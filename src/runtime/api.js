@@ -5,6 +5,7 @@
 import { ACTIONS } from './registry.js';
 import { compileRoute, applySpec } from './spec.js';
 import { toErrorPayload, httpStatusOf } from '../core/errors.js';
+import { scopeStorage } from '../core/paths.js';
 
 // 逐段比较两条模式，决定谁该先匹配：**字面量段优先于参数段**，段数多的优先。
 //
@@ -90,7 +91,20 @@ async function pipeResponse(res, action, ctx) {
   r.stream.pipe(res);
 }
 
+// 面板 scope 切换的入口：前端激活了某个最近目录时，所有请求带 x-nx-rp-scope 头
+// （值为该目录的**原始大小写**路径）。这里把整个路由分发包进 AsyncLocalStorage，
+// 让请求 async 链上的 cwdScope()/cwdDir() 都落到激活目录——业务代码零改动。
+// 头的值只影响「读写哪个 scope 桶」，归一化在 cwdScope() 内部完成；伪造的头最坏
+// 产生一个空桶，写操作另有 originAllowed 跨站防护。
 export async function handleApi(req, res, url) {
+  const scopeHeader = req.headers['x-nx-rp-scope'];
+  if (typeof scopeHeader === 'string' && scopeHeader.trim()) {
+    return scopeStorage.run({ scope: scopeHeader.trim(), dir: scopeHeader.trim() }, () => dispatch(req, res, url));
+  }
+  return dispatch(req, res, url);
+}
+
+async function dispatch(req, res, url) {
   const method = (req.method || 'GET').toUpperCase();
 
   for (const { action, route } of ROUTES) {

@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.4.0 / 2026-09-22
+
+- 最近目录（recents）+ 面板 scope 快速切换——一个面板管所有项目：
+  - serve 启动自动登记当前目录；默认端口上已有 nx-rp 面板时不再起第二进程，
+    登记 + 打开已有面板即返回（用 /api/health 的 cwdScope 字段做进程签名嗅探）
+  - 新命令 `nx-rp recents`（GET /api/recents）；登记入口 `POST /api/recents`
+    为面板/serve 专用（纯 HTTP，与 hook capture 相反的方向）；store.json 新增
+    全局 `recents` 列表（上限 20 条，老数据自动补字段零迁移）
+  - 面板右上角「最近目录」下拉：点击切换激活 scope，之后的查看/新增/编辑都落到
+    那个目录（前端所有请求带 x-nx-rp-scope 头，api.js 用 AsyncLocalStorage 在
+    paths.js 的 cwdScope() 单点穿透，业务代码零改动）；窗口聚焦自动刷新列表；
+    切换状态持久化到 localStorage
+  - workflow 相对路径/镜像目录改走 cwdDir()（激活目录原始大小写路径），
+    面板切 scope 后保存的工作流落到激活项目；agent spawn 的执行 cwd 仍跟随
+    serve 进程（作者可显式传 cwd），注释说明该边界
+- serve 参数解析抽为 parseServeArgs 纯函数：顺带修复 `--port N`（空格形式）
+  实际无效的 bug（此前只有 `--port=N` 生效）；显式跳过 cli.js 追加的 `--store` 值对，
+  避免被误当位置端口
+
+## 0.3.1 / 2026-09-22
+
+- hook 域拆分为两个平级模块（各自独立 tab 与开关，与 link/doc/workflow 平级）：
+  - `hook-prompt` 提示词日志（UserPromptSubmit）：`hook on/off/status/log`
+  - `hook-skill` Skill 追踪（PostToolUse·Skill）：`hook skill-on/skill-off/skill-status/skills`
+  - 开关互不影响：各自只动自己 marker 指纹的 settings entry（单测锁死互不误伤）
+  - 共享逻辑下沉 core/：`claude-settings`（外科手术读写 + 快照轮转）、
+    `hook-io`（stdin EOF 竞速 1s、半截 JSON 字段抢救 session_id/cwd、
+    deriveSessionId 统一派生——借鉴 teamai-cli 的 A 级容错技巧）
+  - 「手动添加」卡片抽为共享组件 ManualAddCard
+- hook 落点命令 `hook capture` / `hook skill-track` 与 entry 格式不变，
+  旧用户的 settings.json 与日志文件零迁移
+
+## 0.3.0 / 2026-09-22
+
+- hook 模块新增 Skill 追踪与健康分（借鉴 Tencent/teamai-cli 的 skill-health 设计）：
+  - 第二条 hook：PostToolUse（matcher Skill）→ `nx-rp hook skill-track`，skill 调用
+    按 cwd 记进 `~/.nx-rp/skills/<cwd哈希>.jsonl`（与提示词日志同一套铁律：
+    async 后台跑、永不报错、退出码恒 0）
+  - `nx-rp hook on`/`off` 同时管两条 entry（各自带 marker 指纹，分别幂等；
+    旧安装只装了提示词日志时，`on` 只补 Skill 条目）；status 分列报告
+  - 新命令 `nx-rp hook skills`（GET /api/hook/skills）：按 skill 聚合使用次数，
+    健康分 = 使用分 0-60（相对最高频归一）+ 新鲜度 0-40（30 天线性衰减），五星显示
+  - 面板「Skill 使用统计」卡片：星级 + 分数 + 次数 + 最近使用；Hook 状态卡片
+    分列两条 hook；手动添加片段含 PostToolUse 组
+- eslint 忽略 `.claude/**`（嵌套克隆仓库的配置文件不参与主仓库 lint）
+
 ## 0.2.3 / 2026-09-21
 
 - hook 面板卡片重排：提示词记录提到最上（主要使用场景），Hook 状态与手动添加

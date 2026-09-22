@@ -1,6 +1,6 @@
 {
   "name": "nx-rp",
-  "version": "0.2.3",
+  "version": "0.4.0",
   "description": "nx-rp（npx-repo）—— 外部信息以链接方式管理：link / doc / workflow 三个域，CLI + Web 面板同源，按 cwd 自动隔离 scope",
   "type": "module",
   "bin": {
@@ -11,7 +11,7 @@
     ".": "./src/index.js"
   },
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && node scripts/link-local.mjs --auto",
     "dev": "node scripts/dev.mjs",
     "dev:vite": "vite --host 127.0.0.1",
     "dev:serve": "node bin/nx-rp.mjs serve --no-open",

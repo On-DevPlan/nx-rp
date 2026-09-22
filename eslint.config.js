@@ -2,7 +2,7 @@
 import { defineConfig } from 'eslint/config';
 
 // 逐模块枚举——新增模块必补，否则该模块静默变成「谁都可以依赖」（无测试会红）。
-const SIBLINGS = ['system', 'link', 'doc', 'workflow', 'hook'];
+const SIBLINGS = ['system', 'link', 'doc', 'workflow', 'hook-prompt', 'hook-skill'];
 
 const BASE_RULES = {
   'no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
@@ -13,7 +13,7 @@ const BASE_RULES = {
 };
 
 export default defineConfig([
-  { ignores: ['src/web/public/**', 'node_modules/**', 'assets/**'] },
+  { ignores: ['src/web/public/**', 'node_modules/**', 'assets/**', '.claude/repo/**', '.claude/**'] },
   {
     files: ['**/*.{js,mjs,jsx}'],
     languageOptions: {

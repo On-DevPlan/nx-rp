@@ -1,9 +1,9 @@
-// hook 模块 action 声明：capture（hook 落点）/ on / off / status / log。
+// hook-prompt action 声明：capture（hook 落点）/ on / off / status / log。
 //
 // capture 的 run 永不抛错——hook 协议里非零退出码会在 transcript 留错误记录，
 // 日志类 hook 的存在感必须是零。on/off/status/log 是普通命令，错误正常上抛。
 //
-// capture 是唯一 cli-only 的 action：它的入参形态是 hook 协议的 stdin 事件 JSON，
+// capture 是 cli-only 的 action：它的入参形态是 hook 协议的 stdin 事件 JSON，
 // 面板没有对应交互。其余四条都 http 可达——面板与 CLI 走同一份逻辑。
 import * as service from './service.js';
 
@@ -16,14 +16,14 @@ function normalizeLimit(v) {
 }
 
 export default {
-  id: 'hook',
+  id: 'hook-prompt',
   title: '提示词日志',
   order: 50,
   view: () => import('./view.jsx'),
 
   actions: [
     {
-      id: 'hook.capture',
+      id: 'hook-prompt.capture',
       cli: ['hook', 'capture'],
       http: null,
       summary: 'UserPromptSubmit 落点：stdin 收事件 JSON → 追加记录（永不报错）',
@@ -36,9 +36,9 @@ export default {
       },
     },
     {
-      id: 'hook.on',
+      id: 'hook-prompt.on',
       cli: ['hook', 'on'],
-      http: ['POST', '/api/hook/on'],
+      http: ['POST', '/api/hook-prompt/on'],
       summary: '往 ~/.claude/settings.json 写 UserPromptSubmit hook（幂等；--dry-run 只预览）',
       flags: { dryRun: { type: 'boolean', hint: '只预览，不写盘' } },
       run: (ctx) => service.hookOn({ dryRun: !!ctx.dryRun }),
@@ -49,10 +49,10 @@ export default {
       },
     },
     {
-      id: 'hook.off',
+      id: 'hook-prompt.off',
       cli: ['hook', 'off'],
-      http: ['POST', '/api/hook/off'],
-      summary: '从 ~/.claude/settings.json 摘掉我们的 hook（其余 hooks 不动；--dry-run 只预览）',
+      http: ['POST', '/api/hook-prompt/off'],
+      summary: '从 ~/.claude/settings.json 摘掉提示词日志 hook（其余 hooks 不动；--dry-run 只预览）',
       flags: { dryRun: { type: 'boolean', hint: '只预览，不写盘' } },
       run: (ctx) => service.hookOff({ dryRun: !!ctx.dryRun }),
       render: (r) => {
@@ -62,10 +62,10 @@ export default {
       },
     },
     {
-      id: 'hook.status',
+      id: 'hook-prompt.status',
       cli: ['hook', 'status'],
-      http: ['GET', '/api/hook/status'],
-      summary: '看 hook 开关状态与日志目录',
+      http: ['GET', '/api/hook-prompt/status'],
+      summary: '看提示词日志 hook 的开关状态与日志目录',
       run: () => service.hookStatus(),
       render: (r) =>
         `hook: ${r.enabled ? '已启用' : '未启用'}${r.disableAllHooks ? '（注意: disableAllHooks=true，全被关掉）' : ''}\n` +
@@ -73,9 +73,9 @@ export default {
         `日志目录: ${r.logDir}`,
     },
     {
-      id: 'hook.log',
+      id: 'hook-prompt.log',
       cli: ['hook', 'log'],
-      http: ['GET', '/api/hook/log'],
+      http: ['GET', '/api/hook-prompt/log'],
       summary: '查提示词记录（默认当前 cwd，--all 跨目录，--limit N 条）',
       // 读命令的 flag 一律不带 default——「不传」本身是有意义的输入（默认当前 cwd）
       flags: {

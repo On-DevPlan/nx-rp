@@ -27,7 +27,9 @@ npx nx-rp routes              # 看 CLI ↔ Web 路由对照
 ## 命令速查
 
 ```
-nx-rp serve                  启动 Web 面板（默认 :7820）
+nx-rp serve                  启动 Web 面板（默认 :7820；端口上已有 nx-rp 面板则
+                             登记当前目录到「最近目录」并直接打开它，不重复起进程）
+nx-rp recents                最近使用的工作目录（面板可一键切换数据范围）
 nx-rp skill install          装内置 skill 到 ~/.claude/skills
 nx-rp help                   列出全部命令
 nx-rp routes                 命令 ↔ 路由对照表
@@ -41,6 +43,15 @@ nx-rp hook off               停用（只摘自己的 entry，其余 hooks 不�
 ```
 
 加 `--json` 到任何命令得机器可读输出。
+
+### 多项目 / 最近目录
+
+数据按工作目录隔离（cwd scope）。在一个面板里管理多个项目：
+
+- 每次在任何项目目录执行 `nx-rp serve`，该目录会被自动登记进「最近目录」——
+  如果默认端口上已经有面板在跑，不会再起第二个进程，直接打开它
+- 面板右上角「最近目录」下拉可切换数据范围：切换后的查看/新增/编辑都落到那个目录
+- 想真正并行开两个面板：`nx-rp serve --port 7830` 显式指定端口
 
 ## 开发
 

@@ -12,8 +12,15 @@ function viewFromHash() {
 }
 
 export default function App() {
-  const { ui, patchUi, boot } = useStore();
+  const { ui, patchUi, boot, switchScope, scopeTick, refreshBoot } = useStore();
   const views = VIEWS;
+
+  // 窗口聚焦时刷新 bootstrap：别的终端跑 nx-rp serve 登记了新目录，这里能看到。
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === 'visible') refreshBoot().catch(() => {}); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [refreshBoot]);
 
   // 启动时把 hash 同步进 store；后续切换时也回写 hash（可分享、可后退）
   useEffect(() => {
@@ -34,6 +41,10 @@ export default function App() {
 
   const current = views.find((v) => v.id === ui.view) || views[0];
 
+  // header 当前 scope 展示：激活了最近目录显示它的末段，否则显示服务进程目录。
+  const activePath = ui.activeScope?.path || boot?.cwdScope || '';
+  const activeLabel = String(activePath).split(/[\\/]/).filter(Boolean).pop() || activePath;
+
   return (
     <>
       <header>
@@ -47,7 +58,26 @@ export default function App() {
           ))}
           {views.length === 0 && <span className="muted" style={{ padding: '6px 12px' }}>暂无视图</span>}
         </nav>
-        <div className="meta">{boot?.cwdScope || ''}</div>
+        <div className="meta" title={activePath}>{activeLabel}</div>
+        {(boot?.recents?.length > 0) && (
+          <details className="recents">
+            <summary>最近目录 {boot.recents.length}</summary>
+            <ul>
+              {boot.recents.map((r) => (
+                <li key={r.scope}>
+                  <button
+                    className={'muted' + (ui.activeScope?.scope === r.scope ? ' active' : '')}
+                    title={`${r.path}\n点击切换：之后的查看/新增/编辑都落到这个目录`}
+                    onClick={() => switchScope(ui.activeScope?.scope === r.scope ? null : r)}
+                    style={{ cursor: 'pointer' }}>
+                    {r.path.split(/[\\/]/).filter(Boolean).pop()}
+                    {ui.activeScope?.scope === r.scope ? ' ✓' : ''}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
       </header>
       <main>
         {!current ? (
@@ -57,8 +87,9 @@ export default function App() {
           </div>
         ) : (
           <ErrorBoundary key={current.id}>
+            {/* scopeTick 进 key：切换激活 scope 时强制重挂载，视图的挂载期请求会带上新 scope 头 */}
             <Suspense fallback={<div className="muted" style={{ padding: 24 }}>加载中…</div>}>
-              <section className="panel active"><current.component /></section>
+              <section className="panel active" key={scopeTick}><current.component /></section>
             </Suspense>
           </ErrorBoundary>
         )}
