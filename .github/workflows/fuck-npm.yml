@@ -1,0 +1,82 @@
+# 兜底发布：npm 主账号（flowot）被封时的备用流水线。
+#
+# 与主工作流（npm-publish.yml）的差异只有两处：
+#   1. 包名：package.json 的 name 必须以 flowot6 为前缀（npm 包名全局唯一，
+#      nx-rp 被主账号占用，小号只能发 flowot6-nx-rp 这类名字）
+#   2. 身份：仓库 secret NPM_TOKEN 存的是 flowot6 的 token
+#
+# 触发：push 到 main（与主仓库同款习惯），也可 workflow_dispatch 手动跑。
+name: fuck-npm (fallback publish)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 打 tag 需要
+  id-token: write   # --provenance 签名需要（OIDC）
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: pnpm test
+
+      - name: 读版本号与包名
+        id: pkg
+        run: |
+          echo "name=$(node -p "require('./package.json').name")" >> $GITHUB_OUTPUT
+          echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+          echo "tag=v$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: 包名必须是 flowot6 前缀（小号只能发自己的命名空间）
+        run: |
+          case "${{ steps.pkg.outputs.name }}" in
+            flowot6-*) echo "包名合规: ${{ steps.pkg.outputs.name }}" ;;
+            *) echo "::error::包名 ${{ steps.pkg.outputs.name }} 不是 flowot6 前缀——这个账号发不了别人的包名"; exit 1 ;;
+          esac
+
+      - name: 已存在则跳过（幂等，与主工作流同款）
+        id: check
+        run: |
+          if git rev-parse "${{ steps.pkg.outputs.tag }}" >/dev/null 2>&1; then
+            echo "tag_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "tag_exists=false" >> $GITHUB_OUTPUT
+          fi
+          if npm view ${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }} version >/dev/null 2>&1; then
+            echo "published=true" >> $GITHUB_OUTPUT
+          else
+            echo "published=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: 打 tag
+        if: steps.check.outputs.tag_exists == 'false'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.pkg.outputs.tag }}" -m "Release ${{ steps.pkg.outputs.tag }}"
+          git push origin "${{ steps.pkg.outputs.tag }}"
+
+      - name: 发布
+        if: steps.check.outputs.published == 'false'
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
