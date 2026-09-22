@@ -1,0 +1,67 @@
+# flowot6 分支的发布流水线：包 @flowot6/nx-rp，密钥 NPM_TOKEN_TEMP。
+#
+# 与 main 的 npm-publish.yml 的分工：
+#   main   —— 包名 nx-rp，密钥 NPM_TOKEN（flowot 主账号，解封前 publish 会 403）
+#   flowot6 —— 包名 @flowot6/nx-rp，密钥 NPM_TOKEN_TEMP（小号，始终可用）
+# main 合并到 flowot6（或直接 push flowot6）即自动发布到小号命名空间。
+#
+# 刻意不打 git tag：main 的流水线也在打同名 tag（v<version>），两分支都打会
+# 互相冲突；flowot6 侧的发布幂等只靠 npm view 检查。
+name: Publish to npm (flowot6)
+
+on:
+  push:
+    branches: [flowot6]
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # --provenance 签名需要（OIDC）
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: pnpm test
+
+      - name: 读包名与版本
+        id: pkg
+        run: |
+          echo "name=$(node -p "require('./package.json').name")" >> $GITHUB_OUTPUT
+          echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: 包名必须是 @flowot6/ scope（防误发主账号包名）
+        run: |
+          case "${{ steps.pkg.outputs.name }}" in
+            @flowot6/*) echo "包名合规: ${{ steps.pkg.outputs.name }}" ;;
+            *) echo "::error::flowot6 分支的包名必须是 @flowot6/* scope，当前是 ${{ steps.pkg.outputs.name }}"; exit 1 ;;
+          esac
+
+      - name: 已发布则跳过（幂等）
+        id: check
+        run: |
+          if npm view ${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }} version >/dev/null 2>&1; then
+            echo "published=true" >> $GITHUB_OUTPUT
+          else
+            echo "published=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_TEMP }}
+
+      - name: 发布
+        if: steps.check.outputs.published == 'false'
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_TEMP }}
