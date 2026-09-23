@@ -2,7 +2,7 @@
 import { defineConfig } from 'eslint/config';
 
 // 逐模块枚举——新增模块必补，否则该模块静默变成「谁都可以依赖」（无测试会红）。
-const SIBLINGS = ['system', 'link', 'doc', 'workflow', 'hook-prompt', 'hook-skill'];
+const SIBLINGS = ['system', 'link', 'doc', 'workflow', 'hook-prompt', 'hook-skill', 'annotations'];
 
 const BASE_RULES = {
   'no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],

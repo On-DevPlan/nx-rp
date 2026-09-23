@@ -1,6 +1,8 @@
-// doc 面板：列表 + Markdown 编辑。
+// doc 面板：文档 CRUD + 知识库与召回（实例文件化 / 索引 / 语义召回一体）。
 //
-// 与 link 同构——但 body 是 textarea，preview 暂不开（Markdown 渲染会引入新依赖）。
+// 与 link 同构——body 是 textarea；下半部分是 zg 集成卡片：
+// 引擎状态（zg 版本/KB 目录/索引/模型/key）→ 导出/索引按钮 → 召回试查。
+// 数据流一条线：登记 → doc export → zg index → zg query。
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../../web/frontend/api/client.js';
 import { Modal, useDialog, useGuard, useToast } from '../../web/frontend/components/ui.jsx';
@@ -12,15 +14,20 @@ export default function DocView() {
   const [list, setList] = useState(null);
   const [editing, setEditing] = useState(null);
   const [viewing, setViewing] = useState(null);
+  const [zg, setZg] = useState(null);
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState(null);
+  const [querying, setQuerying] = useState(false);
   const guard = useGuard();
   const toast = useToast();
   const { dialog, node: dialogNode } = useDialog();
 
   const refresh = useCallback(async () => {
     setList(await api('/api/docs'));
+    setZg(await api('/api/zg/install'));
   }, []);
 
-  useEffect(() => { refresh().catch(() => setList([])); }, [refresh]);
+  useEffect(() => { refresh().catch(() => { setList([]); setZg(null); }); }, [refresh]);
 
   const save = (form) =>
     guard(async () => {
@@ -49,6 +56,34 @@ export default function DocView() {
       await refresh();
     });
 
+  const doExport = () =>
+    guard(async () => {
+      const r = await api('/api/docs/export', { method: 'POST', body: {} });
+      toast(`已同步 ${r.total} 篇到知识库`);
+      await refresh();
+    });
+
+  const doIndex = () =>
+    guard(async () => {
+      toast('索引中…（远程 embedding）');
+      const r = await api('/api/zg/index', { method: 'POST', body: {} });
+      toast(r.ok ? '索引完成' : '索引失败：' + (r.stderr || '').slice(0, 120));
+      await refresh();
+    });
+
+  const doQuery = () =>
+    guard(async () => {
+      if (!q.trim()) return;
+      setQuerying(true);
+      setResults(null);
+      try {
+        const r = await api('/api/zg/query', { method: 'POST', body: { q } });
+        setResults(r.ok ? r.results : '失败: ' + (r.stderr || r.hint || ''));
+      } finally {
+        setQuerying(false);
+      }
+    });
+
   return (
     <div>
       <div className="toolbar" style={{ marginBottom: 12 }}>
@@ -73,6 +108,65 @@ export default function DocView() {
               </div>
             </div>
           ))}
+      </div>
+
+      <div className="card">
+        <div className="colhead">
+          <span>知识库与召回</span>
+          <span className="muted">{zg ? (zg.zgInstalled ? `zg ${zg.version} · ${zg.indexed ? '已索引' : '未索引'}` : 'zg 未安装') : '加载中…'}</span>
+        </div>
+        {!zg ? <div className="empty">{loadErrorZg()}</div> : (
+          <div style={{ padding: '10px 12px' }}>
+            <dl className="kv">
+              <div className="kv-row">
+                <dt>知识库目录</dt>
+                <dd className="mono nowrap" title={zg.kbDir}>{zg.kbDir}</dd>
+              </div>
+              <div className="kv-row">
+                <dt>embedding</dt>
+                <dd className="mono">{zg.embedding}</dd>
+              </div>
+              <div className="kv-row">
+                <dt>API key</dt>
+                <dd>
+                  {zg.keyConfigured
+                    ? <span className="tag strong">已配置 workspace 授权</span>
+                    : <span className="tag bad">未配置</span>}
+                  <a href="https://platform.qianwenai.com/home/" target="_blank" rel="noreferrer" className="muted" style={{ marginLeft: 8, fontSize: 12 }}>引导页 ↗</a>
+                </dd>
+              </div>
+            </dl>
+            <div className="toolbar" style={{ padding: '8px 0 0' }}>
+              <button className="btn small" onClick={doExport}>导出到知识库</button>
+              <button className="btn small" onClick={doIndex} disabled={!zg.zgInstalled}>建立索引</button>
+              {!zg.zgInstalled && <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>先 npm install -g @zvec/zvec-grep；引导：nx-rp zg onboard</span>}
+            </div>
+            <p className="muted" style={{ fontSize: 12, margin: '8px 0 0' }}>
+              数据流：登记文档 → 导出到知识库 → 建索引 → 语义召回。key 只写入 zg 全局配置（~/.zvec-grep/config.json），nx-rp 不存储不回显；刻意不装 zg 的 MCP（direct 一次性子进程，零常驻）。
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="colhead">
+          <span>召回试查</span>
+          <span className="muted">direct · limit 5 · 结果带来源头块</span>
+        </div>
+        <div className="toolbar" style={{ padding: '8px 12px' }}>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') doQuery(); }}
+            placeholder="语义查询，例：hook 开关的外科手术是怎么实现的"
+            style={{ flex: 1, minWidth: 0 }}
+            disabled={querying}
+          />
+          <button className="btn small" onClick={doQuery} disabled={querying || !q.trim()}>{querying ? '查询中…' : '查询'}</button>
+        </div>
+        {results != null && (
+          <pre style={{ margin: '0 12px 12px', whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 12 }}>{results}</pre>
+        )}
       </div>
 
       {editing && (
@@ -109,6 +203,10 @@ export default function DocView() {
       </div>
     </div>
   );
+}
+
+function loadErrorZg() {
+  return '无法读取 zg 状态';
 }
 
 function Field({ label, children }) {

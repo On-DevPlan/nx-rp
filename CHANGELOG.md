@@ -1,5 +1,97 @@
 # Changelog
 
+## 0.7.2 / 2026-09-23
+
+- workflow 模块精简：DOT 文本格式（Graphviz/DOT）作为唯一事实源
+  - 删除 JS 执行引擎（ctx.step/parallel/agent-call/http/raw 五节点类型 + SSE）——约 700 行
+    删除的复杂度，回归有向依赖图的本质：节点是状态、边是顺序、DOT 一行写完
+  - 新增「DOT 编辑器 + 画布」面板：左 textarea 单色专注文本，右 React Flow 实时预览
+  - 双击空白创建节点（弹输入框 → 自动改 DOT）；右键拖拽从 A 到 B 创建 a -> b 边；
+    双击节点删除（连边同步移除）—— 画布与 DOT 双向同步，画布只是 DOT 的视图
+  - 自定义 DOT 子集解析器（digraph + [..] 属性 + 节点行 + 边行 + 分号/换行两种分隔符）
+  - 静态校验：自环 / 重复边 / 悬挂边 / 空图 / 语法错
+  - 存储路径改 `cwd/.nx-rp-workflows/<name>.dot`（可见、与 store.json 解耦）
+  - actions 改为 6 条：list / get / save / remove / validate / import
+- workflow 测试 9 项全过（DOT 解析往返、中文/转义、自环/重复边、CRUD、非法名字拒绝）
+
+## 0.7.1 / 2026-09-23
+
+- 新增 `nx-rp skill get [name] [ref]`：
+  - 把内置 skill 的 SKILL.md（默认）/ `references/<ref>` 输出到 stdout，
+    **prefix → 文档 → install 状态**三段拼接，prefix 固定最前
+    （部分 agent 输出过长会截断，prefix 必须最先告诉 agent 文件位置与复制建议）
+  - 默认 name = `nx-rp`；ref 接受 `references/foo.md` / 裸名 `foo`（自动查 `references/foo.md`）/
+    `./foo.md`，路径穿越（`..`）与绝对路径（ref 越界）拒绝
+  - 同时按 install 既有逻辑装到 `~/.claude/skills/<name>`（接受 `--to`，`--force` 静默忽略）；
+    conflict 状态正常返回，**不影响文档输出**（get 永远给文档）
+  - `--json` 输出 `{skillName, ref, content, contentBytes, install}` 四元，不含 prefix
+    （prefix 是给人类的引导语，`--json` 是机器协议）
+- skill 子命令用法错误信息补充 get 子命令提示
+
+## 0.7.0 / 2026-09-23
+
+- annotations 文件预览增强（性能优先）：
+  - loadFile 支持 offset/limit 窗口切片：服务端整读但只传窗口，
+    返回 hasMore/nextOffset 供续传；CLI 不带 limit 时仍按上限铁律拒绝渲染
+  - web「文件批注」面板渐进加载：首屏 1000 字符，「加载更多」每次 +3000
+    追加渲染（已渲染部分不重排）；超限拒绝仅在 CLI 上限模式生效
+  - 新增目录浏览 `ann browse [dir]`：列出直接子项（不递归、隐藏项跳过）；
+    web 面板「浏览…」按钮逐级点选进入，性能零损耗（每步一次 readdir）
+- share 共享知识库：<docRoot>/shared/ 跨项目共用——放基本信息防丢失
+  - `doc add --shared`：标记为共享，export 镜像到 shared 桶不进项目桶
+  - `doc export`：项目桶 + shared 桶同时同步；返回 { shared: {...} } 字段
+  - `zg query` 自动并查 shared 库（默认开启，`--noShared` 关闭）；
+    共享命中以 [shared 共享知识库命中] 标注
+
+## 0.6.0 / 2026-09-23
+
+- 新增 annotations 模块（文件批注，独立 tab「文件批注」）：
+  - 三类批注：review（评价）/ todo（待办，带 done 勾选）/ note（思考），
+    支持 `--line` 行号锚点（评论链接到文件具体位置）
+  - 文件加载器 `ann load`：默认 1000 字符预览，**超限拒绝渲染**（truncated +
+    body null，绝不截半截内容）；二进制（NUL 探测）拒绝；`--full` 显式全量
+    受 200K 硬上限
+  - `ann todos` 跨文件聚合全部未完成待办（待办操作主入口）
+  - 存储按目标文件分桶：~/.nx-rp/annotations/<serializePath(file)>.json
+    （与 KB 同一序列化规则，全 ASCII；原子写）
+  - 声明为 resource（annotation），CRUD 五操作由 registry 完备性测试钉住双端可达
+- 测试 81 项全绿
+
+## 0.5.1 / 2026-09-23
+
+- zg-boot 模块并入 doc 域，面板合并为「文档与召回」一个 tab：
+  - 完整数据流一处管理：登记 → doc export（实例文件化）→ zg index → zg query
+  - 业务迁至 src/modules/doc/zg.js；CLI 命令保持 zg 前缀不变（zg onboard/auth/
+    index/query/status/migrate），action id 统一 doc.zg.*（HTTP 路由不变）
+  - doc 面板新增「知识库与召回」卡片（引擎状态/导出/索引按钮）与「召回试查」卡片
+- 召回结果增强：输出头部注入来源上下文块（知识库根/KB 子目录/来源工作目录/
+  相对路径拼接公式）——AI 命中后可判断知识归属、按行号回源读全文
+- 真机端到端验证：远程索引（qwen/qwen3.7-text-embedding）+ 中文语义召回 + 增量索引
+
+## 0.5.0 / 2026-09-22
+
+- 新增 zg-boot 模块（召回引擎引导，zvec-grep 集成）：
+  - `zg onboard` 新用户一条命令引导：装 zg → 引导页（platform.qianwenai.com）拿 key
+    → 配置固定远程模型 → doc export → index → query，按步提示缺啥补啥
+  - `zg auth --key <key>`：key 只经 CLI 参数写入 zg 全局配置（~/.zvec-grep/config.json），
+    nx-rp 的 store/日志/返回值全程不存储、不回显、不入库
+  - embedding 固定为 qwen/qwen3.7-text-embedding（远程 128K 输入，免费额度；常量不开放配置，
+    换模型必须 --rebuild 由 zg manifest 保证一致性）
+  - `zg index` / `zg query`：全部 --mode direct 一次性子进程（零常驻零端口）；
+    query 显式 --refresh wait（新鲜度）+ --compact + --preview short（上下文预算）
+  - **不装 MCP**：刻意不跑 `zg install`，zg 只做召回引擎；已有装机的卸载提示内置
+  - `zg migrate --new-root`：docRoot 变更全量复制迁移 + 清旧痕迹
+- 路径序列化与知识库定位（core/paths.js）：
+  - serializePath：与 Claude Code 项目目录同规则（非 [A-Za-z0-9_-] 逐字符→-，
+    D:\a_js\js_proj\nx-rp → d--a_js-js_proj-nx-rp），全 ASCII 跨平台安全
+  - workspaceKbFor(cwd) = <docRoot>/<序列化名>/——一个工作目录一个知识库
+- doc 模块知识实例文件化：
+  - `doc export`：store 里的 doc 全量镜像为 KB 目录 md 文件（frontmatter 携带
+    title/tags/source；exportedAt 用内容派生值保证镜像幂等；删除条目同步删文件）
+  - `doc root` / `doc root --set`：全局 docRoot 查看/变更（默认 ~/.nx-rp/doc）
+- 测试 73 项全绿；测试自身的 KB 落盘严格隔离在临时目录（store 缓存跨测试泄漏
+  导致污染真实 ~/.nx-rp/doc 的问题已修复并有 forgetStore 纪律）
+
 ## 0.4.1 / 2026-09-22
 
 - 包名迁移为 @flowot6/nx-rp（npm 主账号 flowot 被封，改用小号 flowot6 的

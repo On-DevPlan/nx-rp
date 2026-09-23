@@ -1,6 +1,6 @@
 ---
 name: nx-rp
-description: nx-rp（npx-repo）—— 给当前项目用「链接」管理外部信息。当用户需要给某个项目登记一组外部资源链接（URL / OpenAPI / 工具面板 / Slack 频道）、整理上下文文档、或编排工作流（agent 用 JS 写 .mjs 文件，nx-rp 直接执行，SSE 流式输出进度）时使用。触发词：外部链接、外部资源整理、上下文文档、工作流编排、workflow、scope、cwd 作用域、nx-rp、npx-repo、提示词日志、prompt log、hook。
+description: nx-rp（npx-repo）—— 给当前项目用「链接」管理外部信息。当用户需要给某个项目登记一组外部资源链接（URL / OpenAPI / 工具面板 / Slack 频道）、整理上下文文档、或编排工作流（agent 用 JS 写 .mjs 文件，nx-rp 直接执行，SSE 流式输出进度）时使用。触发词：外部链接、外部资源整理、上下文文档、工作流编排、workflow、scope、cwd 作用域、nx-rp、npx-repo、提示词日志、prompt log、hook、召回、知识库、zvec-grep、zg、semantic recall、embedding、文件批注、批注、评价、待办、annotation。
 ---
 
 # nx-rp — 给当前项目接一组外部资源 + 编排工作流
@@ -35,6 +35,28 @@ nx-rp hook status / skill-status  # 各自的开关状态
 面板上「提示词日志」「Skill 追踪」两个 tab 与上述命令一一对应。
 使用与排障详见 [[prompt-log]]；工作流生成详见 [[workflow-author]]。
 
+另有 **文档与召回**（doc 域，一个 tab 管完整数据流）：
+每个工作目录对应一个知识库 `<docRoot>/<路径序列化>/`（默认 docRoot `~/.nx-rp/doc`，
+序列化规则与 Claude Code 项目目录一致）。doc 条目经 `doc export` 实例化为 KB 目录的
+md 文件，`zg index` 后即可语义召回（远程 qwen embedding，模型三选一）。
+
+```
+nx-rp zg onboard            # 新用户引导：装 zg → 拿 key → 选模型 → 用起来
+nx-rp doc export            # doc 条目镜像为 KB md 文件（幂等）
+nx-rp zg index              # 建/增索引（direct 模式，零常驻）
+nx-rp zg query --q "问题"    # 语义召回（结果带知识库根/子目录/来源工作目录头块）
+nx-rp doc root --set <dir>  # 改全局知识库根（自动迁移旧 KB）
+```
+
+安全边界：API key 只写入 zg 全局配置（~/.zvec-grep/config.json），nx-rp 不存储
+不回显不入库；刻意不装 zg 的 MCP（zg 只做召回引擎）。
+使用、模型选型与 agent 召回用法详见 [[zg-recall]]。
+
+另有 **`annotations` 文件批注**：给任意本机文件挂 review（评价）/ todo（待办）/
+note（思考），支持行号锚点；`ann load` 加载文件预览（默认 1000 字符，超限拒绝渲染，
+`--full` 显式全量受 200K 硬上限）；`ann todos` 跨文件看待办。
+快速上手与渲染铁律详见 [[annotations]]。
+
 每个资源的可见性都按 cwd 自动隔离：同一 cwd 看到一致数据，切换目录是不同 scope。
 多项目场景：`nx-rp recents` 列最近目录；面板右上角可一键切换数据范围；
 默认端口上已有面板时再跑 `nx-rp serve` 不会起第二进程，登记当前目录并直接打开。
@@ -53,6 +75,15 @@ nx-rp doc list
 nx-rp workflow validate --file demo.mjs   # 校验（不写盘）
 nx-rp workflow add demo --file demo.mjs    # 写入当前 cwd scope
 nx-rp workflow run demo                  # 跑（SSE 流式输出）
+nx-rp skill install                    # 装内置 skill 到 ~/.claude/skills
+nx-rp skill get [name] [ref]            # 输出 SKILL.md（默认）/ references/<ref> 到 stdout；
+                                       #   同时按 install 既有逻辑装到 ~/.claude/skills/<name>；
+                                       #   三段拼接（prefix → 文档 → install 状态），
+                                       #   prefix 固定最前——给不直接识别 ~/.claude/skills
+                                       #   的 agent 一条命令拿全上下文，建议 agent 把
+                                       #   内容复制到自己可访问路径后续直接调用。
+                                       #   ref 接受 `references/foo.md` / 裸名 `foo`
+                                       #   （自动查 references/foo.md）/ `./foo.md`。
 ```
 
 加 `--json` 得机器可读输出。

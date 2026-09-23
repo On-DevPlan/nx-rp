@@ -15,8 +15,9 @@ import doc from '../modules/doc/index.js';
 import workflow from '../modules/workflow/index.js';
 import hookPrompt from '../modules/hook-prompt/index.js';
 import hookSkill from '../modules/hook-skill/index.js';
+import annotations from '../modules/annotations/index.js';
 
-export const MODULES = [system, link, doc, workflow, hookPrompt, hookSkill].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
+export const MODULES = [system, link, doc, workflow, hookPrompt, hookSkill, annotations].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
 
 export const ACTIONS = MODULES.flatMap((m) =>
   (m.actions || []).map((a) => ({ ...a, module: m.id }))

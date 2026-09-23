@@ -31,6 +31,9 @@ nx-rp serve                  启动 Web 面板（默认 :7820；端口上已有 
                              登记当前目录到「最近目录」并直接打开它，不重复起进程）
 nx-rp recents                最近使用的工作目录（面板可一键切换数据范围）
 nx-rp skill install          装内置 skill 到 ~/.claude/skills
+nx-rp skill get              把内置 skill 文档（SKILL.md / references/*）输出到 stdout；
+                             同时按 install 既有逻辑装到 ~/.claude/skills——给不直接
+                             识别 ~/.claude/skills 的 agent 一条命令拿全上下文
 nx-rp help                   列出全部命令
 nx-rp routes                 命令 ↔ 路由对照表
 nx-rp bootstrap --json       一次性拿齐上下文
@@ -40,6 +43,13 @@ nx-rp workflow apply <file>
 nx-rp hook on                启用提示词日志 hook（写 ~/.claude/settings.json）
 nx-rp hook log               看当前目录的提示词记录（--all 跨目录）
 nx-rp hook off               停用（只摘自己的 entry，其余 hooks 不动）
+nx-rp hook skill-on / skills 启用 Skill 追踪 / 看 skill 使用统计与健康分
+nx-rp zg onboard             召回引擎引导：装 zg → 拿 key → 选模型 → 用起来
+nx-rp doc export             doc 知识实例文件化（镜像到知识库目录，可被 zg 索引）
+nx-rp zg index / query       知识库建索引 / 语义召回（远程 qwen embedding）
+nx-rp doc root --set <dir>   改全局知识库根（自动迁移）
+nx-rp ann load / add         加载文件预览（1000 字符限）/ 挂批注（评价/待办/思考）
+nx-rp ann todos              跨文件的未完成待办清单
 ```
 
 加 `--json` 到任何命令得机器可读输出。

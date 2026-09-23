@@ -1,124 +1,135 @@
-// workflow 服务测试：JS 一等格式下的校验 + 运行 + CRUD。
-import { test } from 'node:test';
+// workflow 极简版单测：DOT 解析 + 校验 + 文件 IO。
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import * as service from '../../src/modules/workflow/service.js';
+import { pathToFileURL } from 'node:url';
 
-function tempFile(body) {
-  const dir = mkdtempSync(join(tmpdir(), 'nx-rp-wf-'));
-  const path = join(dir, 'wf.mjs');
-  writeFileSync(path, body, 'utf8');
-  return { dir, path };
-}
+const ROOT = join(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'), '..');
 
-const VALID = `export default async function run(ctx) {
-  await ctx.step('hello', () => 'world');
-}`;
+let tmp;
+let origCwd;
+let fakeCwd;
 
-const NO_DEFAULT = `export const run = async () => 1;`;
+const serviceUrl = () => pathToFileURL(join(ROOT, 'src', 'modules', 'workflow', 'service.js')).href;
 
-test('validateWorkflow: 合法 export default 通过', async () => {
-  const { path, dir } = tempFile(VALID);
-  try {
-    const r = await service.validateWorkflow(path);
-    assert.equal(r.hasDefault, true);
-    assert.equal(r.isAsync, true);
-    assert.equal(r.name, 'run');
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+beforeEach(async () => {
+  tmp = await mkdtemp(join(tmpdir(), 'nxrp-wf-'));
+  origCwd = process.cwd();
+  fakeCwd = join(tmp, 'proj');
+  await mkdir(fakeCwd, { recursive: true });
+  process.chdir(fakeCwd);
 });
 
-test('validateWorkflow: 缺 default 报错', async () => {
-  const { path, dir } = tempFile(NO_DEFAULT);
-  try {
-    await assert.rejects(() => service.validateWorkflow(path), /必须 export default/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+afterEach(async () => {
+  process.chdir(origCwd);
+  await rm(tmp, { recursive: true, force: true });
 });
 
-test('validateWorkflow: 不存在的文件报错', async () => {
-  await assert.rejects(() => service.validateWorkflow('/tmp/__nx_rp_no_such__.mjs'), /加载失败/);
+test('parseDot：基本 digraph 解析', async () => {
+  const { parseDot } = await import(serviceUrl());
+  const text = `digraph workflow {
+    a -> b
+    b -> c
+    c [label="结束", shape=ellipse, fillcolor="#dcfce7"]
+  }`;
+  const r = parseDot(text);
+  assert.equal(r.errors.length, 0);
+  assert.equal(r.nodes.length, 3);
+  assert.equal(r.edges.length, 2);
+  assert.equal(r.nodes.find((n) => n.id === 'c').label, '结束');
+  assert.equal(r.nodes.find((n) => n.id === 'c').shape, 'ellipse');
+  assert.equal(r.edges[0].source, 'a');
+  assert.equal(r.edges[0].target, 'b');
 });
 
-test('runWorkflowFile: 节点事件正确发', async () => {
-  const { path, dir } = tempFile(`export default async function run(ctx) {
-  await ctx.step('a', () => 1);
-  await ctx.parallel({ b: () => 2, c: () => 3 });
-}`);
-  try {
-    const stream = await service.runWorkflowFile(path);
-    const chunks = [];
-    for await (const c of stream) chunks.push(c);
-    const text = Buffer.concat(chunks).toString('utf8');
-    // graph 事件 + nodeStart/Done 帧混合
-    assert.match(text, /event: graph\ndata: \{"nodes":\[\{"id":"n1","name":"a"/);
-    // n3 / n4 出现在图里（node 列表里有），且含 parallel 边
-    assert.match(text, /"id":"n3","name":"b"/);
-    assert.match(text, /"id":"n4","name":"c"/);
-    // 三种边类型至少出现一次
-    assert.match(text, /"type":"parallel"/);
-    assert.match(text, /"type":"seq"/);
-    // 节点开始 / 结束事件
-    assert.match(text, /event: nodeStart\ndata: \{"id":"n1","name":"a"\}/);
-    assert.match(text, /event: nodeDone\ndata: \{"id":"n1","name":"a","ok":true/);
-    assert.match(text, /event: done\ndata: \{"ok":true/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+test('parseDot：缺 digraph 包装 / 自环在 parser 不挡（在 validator 挡）', async () => {
+  const { parseDot } = await import(serviceUrl());
+  const r1 = parseDot('a -> b');
+  assert.ok(r1.errors.length > 0);
+  const r2 = parseDot('digraph g { a -> a }');
+  assert.equal(r2.errors.length, 0, '自环 parser 层不报，validator 才报');
 });
 
-test('runWorkflowFile: 节点失败 → done.ok=false', async () => {
-  const { path, dir } = tempFile(`export default async function run(ctx) {
-  await ctx.step('bad', () => { throw new Error('boom'); });
-}`);
-  try {
-    const stream = await service.runWorkflowFile(path);
-    const chunks = [];
-    for await (const c of stream) chunks.push(c);
-    const text = Buffer.concat(chunks).toString('utf8');
-    // 错误通过 error 事件冒泡（不再嵌在 nodeDone 里）
-    assert.match(text, /event: error\ndata: \{"message":"boom"\}/);
-    assert.match(text, /"ok":false/);
-    // done 帧存在
-    assert.match(text, /event: done\ndata: \{"ok":false/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+test('parseDot：字符串属性含空格/中文/转义', async () => {
+  const { parseDot } = await import(serviceUrl());
+  const r = parseDot(`digraph g { a [label="你好世界"]; a -> b [label="开始 → 结束"] }`);
+  assert.equal(r.nodes.find((n) => n.id === 'a').label, '你好世界');
+  assert.equal(r.edges[0].label, '开始 → 结束');
 });
 
-test('listWorkflows + saveWorkflow + removeWorkflow: 完整 CRUD', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'nx-rp-store-'));
-  const storePath = join(dir, 'store.json');
-  const wfDir = join(dir, 'wf-src');
-  mkdirSync(wfDir, { recursive: true });
-  process.env.NX_RP_STORE = storePath;
-  try {
-    const { forgetStore } = await import('../../src/core/store.js');
-    forgetStore();
+test('serializeDot：图 → DOT 往返不丢信息', async () => {
+  const { parseDot, serializeDot } = await import(serviceUrl());
+  const src = `digraph workflow {
+    start [label="开始", shape=ellipse, fillcolor="#e0f2fe"]
+    start -> a
+    a [label="节点 A"]
+    a -> b [label="依赖"]
+  }`;
+  const out = serializeDot(parseDot(src));
+  assert.match(out, /start \[/);
+  assert.match(out, /a -> b \[label="依赖"\]/);
+});
 
-    const filePath = join(wfDir, 'demo.mjs');
-    writeFileSync(filePath, VALID, 'utf8');
-    process.env.NX_RP_WORKFLOWS_DIR = join(dir, 'wf-out');
+test('validateWorkflow：自环 + 重复边都拒', async () => {
+  const { validateWorkflow } = await import(serviceUrl());
+  assert.equal(validateWorkflow('digraph g { a -> b }').ok, true);
+  const selfLoop = validateWorkflow('digraph g { a -> a }');
+  assert.equal(selfLoop.ok, false);
+  assert.ok(selfLoop.problems.some((p) => /自环/.test(p)));
+  const dup = validateWorkflow('digraph g { a -> b; a -> b }');
+  assert.equal(dup.ok, false);
+  assert.ok(dup.problems.length >= 1);
+});
 
-    const saved = await service.saveWorkflow('demo', filePath);
-    assert.equal(saved.name, 'demo');
+test('validateWorkflow：空 digraph / 语法错', async () => {
+  const { validateWorkflow } = await import(serviceUrl());
+  assert.equal(validateWorkflow('digraph g {}').ok, false);
+  assert.equal(validateWorkflow('not a digraph').ok, false);
+});
 
-    const list = await service.listWorkflows();
-    assert.equal(list.length, 1);
-    assert.equal(list[0].name, 'demo');
+test('listWorkflows + writeWorkflow + readWorkflow + removeWorkflow：完整 CRUD', async () => {
+  const svc = await import(serviceUrl());
+  const dot = `digraph workflow { a -> b; b -> c }`;
+  assert.equal((await svc.listWorkflows()).length, 0);
+  await svc.writeWorkflow('flow-a', dot);
+  assert.equal((await svc.listWorkflows()).length, 1);
+  const got = await svc.readWorkflow('flow-a');
+  assert.match(got.source, /a -> b/);
+  assert.equal(got.nodes.length, 3);
+  await svc.writeWorkflow('flow-b', dot);
+  assert.equal((await svc.listWorkflows()).length, 2);
+  await svc.removeWorkflow('flow-a');
+  assert.equal((await svc.listWorkflows()).length, 1);
+  await assert.rejects(() => svc.readWorkflow('flow-a'), /不存在/);
+});
 
-    // 重新 add 应正常（saveWorkflow 是 create-or-update）
-    await service.saveWorkflow('demo', filePath);
+test('writeWorkflow：非法名字拒绝；半成品 DOT 不阻断保存', async () => {
+  const svc = await import(serviceUrl());
+  await assert.rejects(() => svc.writeWorkflow('../etc', 'digraph g {}'), /匹配/);
+  await assert.rejects(() => svc.writeWorkflow('', 'digraph g {}'), /匹配/);
+  const r = await svc.writeWorkflow('draft', 'digraph draft { broken');
+  assert.ok(r.problems.length > 0, '校验问题由 problems 字段反映，不阻断保存');
+});
 
-    await service.removeWorkflow('demo');
-    const after = await service.listWorkflows();
-    assert.equal(after.length, 0);
-  } finally {
-    delete process.env.NX_RP_STORE;
-    delete process.env.NX_RP_WORKFLOWS_DIR;
-    rmSync(dir, { recursive: true, force: true });
+test('validateWorkflowFile：读外部 DOT 文件验证', async () => {
+  const svc = await import(serviceUrl());
+  const externalDot = join(tmp, 'external.dot');
+  await writeFile(externalDot, `digraph ext { x -> y [label="go"] }`, 'utf8');
+  const r = await svc.validateWorkflowFile(externalDot);
+  assert.equal(r.ok, true);
+  assert.equal(r.nodes, 2);
+});
+
+test('registry：workflow 6 条 action 双端声明齐全', async () => {
+  const { ACTIONS } = await import(pathToFileURL(join(ROOT, 'src', 'runtime', 'registry.js')).href);
+  const ids = new Set(ACTIONS.map((a) => a.id));
+  for (const id of ['workflow.list', 'workflow.get', 'workflow.save', 'workflow.remove', 'workflow.validate', 'workflow.import']) {
+    assert.ok(ids.has(id), `缺 action: ${id}`);
   }
-});
-
-test('saveWorkflow: 不存在的文件报错', async () => {
-  await assert.rejects(
-    () => service.saveWorkflow('x', '/tmp/__nx_rp_no__.mjs'),
-    /不存在/,
-  );
+  const httpById = new Map(ACTIONS.map((a) => [a.id, a.http]));
+  for (const id of ['workflow.list', 'workflow.get', 'workflow.save', 'workflow.remove', 'workflow.validate', 'workflow.import']) {
+    assert.ok(Array.isArray(httpById.get(id)), `${id} 缺 HTTP`);
+  }
 });
