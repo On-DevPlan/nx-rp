@@ -1,13 +1,102 @@
 # Changelog
 
+## 0.7.6 / 2026-09-24
+
+- deps 面板双模式（预览 / 编辑）+ 渲染器换血 @viz-js/viz：
+  - **预览**（默认）：服务端扫描结果 → Graphviz 官方 WASM（@viz-js/viz）渲染 SVG。
+    布局准确性从自研 dagre 分层升级为 graphviz 官方引擎（dot/neato/fdp/circo/twopi
+    全可用），任意合法 DOT 都能渲染——不再受自研子集解析器限制
+  - **编辑**：textarea 看/改 DOT 文本，浏览器本地实时预览（300ms debounce，零网络往返）；
+    语法错误结构化显示（render 返回 failure 不抛异常），**旧图降透明保留**——
+    打字的非法中间态不清空不闪烁；「回填扫描结果」覆盖前确认
+  - 新 action `deps.save`（POST /api/deps/save）：DOT 文本落盘到 cwd（激活 scope）相对路径，
+    `.dot`/`.gv` 扩展名强制、`..` 穿越与绝对路径拒绝、2MB 上限、二进制（NUL）拒绝；
+    `--dot` 缺省 = 重新扫描后保存（`nx-rp deps save --file deps.dot` 即导出 graphviz 文件）
+  - 新 action `deps.load`（GET /api/deps/load）：读外部 .dot 文本（绝对路径可读——导入本就
+    跨目录；相对按激活 scope；200K 上限、二进制拒绝——边界对齐 annotations load）
+  - 面板另存走输入对话框（预填 .nx-rp-deps.dot）；导入走前端 FileReader 直读不落盘；
+    缩放 −/＋/适应（25-400%），graphviz svg 自带 viewBox 等比缩放
+  - **删除**：自研 DOT 解析器 dot.js、@xyflow/react、@dagrejs/dagre 依赖及 xyflow 全局
+    CSS——deps chunk 纯 viz（1.36MB，懒加载不影响其它 tab 首屏）；deps.scan 的扫描根
+    改按 cwdDir()（面板激活 scope）解析，与 save 落盘基准一致
+  - 依赖图「只读」不变量改述：scan 只读（图从源码推导）+ DOT 文本导出导入，无 CRUD
+- 测试 128 项全绿（deps 15 项：scan 准确性 10 + saveDot/loadDot 5）
+
+## 0.7.5 / 2026-09-24
+
+- workflow 模块重构为 deps 依赖图模块（**删编辑，保渲染，提升准确性**）：
+  - 删除 DOT 编辑器 / workflow CRUD（list/get/save/remove/validate/import 六 action
+    + 画布手势）——图是「从源码推导的只读视图」，编辑无意义（改图 = 改代码）
+  - 唯一 action `deps.scan`（cli `nx-rp deps` / GET /api/deps）；面板为全宽只读画布
+  - 扫描准确性三修复：
+    - **词法清洗后匹配**：剥注释与「非 import 说明符」的字符串再匹配——
+      注释/字符串/模板串里的 import 文本不再造成假边（清洗器按说明符位置
+      保留真 import：前文匹配 `import…from` / `export…from` / `import(` / `require(`）
+    - **JS 家族全覆盖**：.jsx/.mjs/.cjs 与 .js 同等参与——旧扫描只认 .js，
+      web 层（App.jsx + 7 个 view.jsx）整个不可见，serve→web 依赖链断裂
+      （41 文件/54 边 → 43 文件/102 边）
+    - **动态 import() 识别**：`await import('./x.js')` 表达式任意位置可识别；
+      边全局去重；node_modules/dist/public 构建产物目录跳过
+  - 面板渲染三修复（此前「看不到线条」的根因）：
+    - ReactFlow 直接父级必须有确定高度（absolute+100% 塌不进 minHeight 父容器）
+    - 自定义节点必须渲染 `<Handle>`——无锚点 ReactFlow **静默丢弃全部边**
+    - fitView 在布局落位后重算（挂载时算出 scale(2) 越放越大）
+  - 依赖图 DOT 节点 id 允许引号包裹（"core.store"），解析器与序列化器对称支持；
+    解析报错自带修法提示（链式边/引号 id/缺包裹各有解释）
+  - 删除已无人引用的 src/dispatcher.js（旧 workflow ctx.nx 的遗产）
+- 测试：deps 准确性 10 项（词法清洗/正则字面量/JS 家族/解析顺序/动态 import/去重）
+
+## 0.7.4 / 2026-09-23
+
+- 修 vite 外部化报错（浏览器端 `Cannot access node:* in client code`）：
+  - 根因是 view.jsx 从 service.js import 纯函数（parseDot），把 service 的
+    node:fs / node:path / core/paths 整条服务端依赖链拖进前端 bundle
+  - 拆出 `src/modules/workflow/dot.js`：DOT 解析/序列化/校验的**唯一实现**，
+    零 node 依赖，面板与服务端共享同一份（语义不会分叉）
+  - core/paths.js 全部 node 内置模块改 `createRequire` 懒加载；
+    `core/als.js` 隔离 AsyncLocalStorage
+  - 验证：构建产物零 `node:` 模块引用、零 createRequire/homedir
+- 修依赖图 `edges: 0`：路径解析漏判「import 已带 .js 扩展名」的情况
+  （`./paths.js` 被拼成 `paths.js.js` 而永远 miss）——41 文件现在正确解析出
+  54 条边、36 条跨层边
+- `.gitignore` 加 `.playwright-mcp/`（浏览器自动化调试产物）
+
+## 0.7.3 / 2026-09-23
+
+- workflow + 依赖图合并：DOT 文本是两者共同事实源
+  - 删除独立 graph 模块；dependency 扫描作为 `service.depsToDot(root)` 并入 workflow
+  - 新增 `workflow deps [--root] [--json]`：扫描 src/ 的 import 关系输出 digraph
+  - 面板「工作流」tab 新增「生成依赖分析」按钮，点击注入扫描结果到 DOT 编辑器
+- core/paths.js vite 兼容性修复：避免 `node:os.homedir` / `node:path` 顶层求值
+  导致前端 bundle 触达 `Cannot access homedir` / `Cannot access join` 错误
+  - 全部 node 内置模块走 `createRequire(import.meta.url)` 懒加载
+  - `core/als.js` 隔离 AsyncLocalStorage，前端 bundle 不再被静态图拖入
+  - docsFile / skillsFile / storePathFromEnv 等保持服务端的 `let + setHookPaths` 行为
+
 ## 0.7.2 / 2026-09-23
+
+- annotations 面板重构成 IDE 三栏（左工作树 / 中预览 / 右批注）：
+  - 左栏 cwd 目录树可展开/折叠（`▸`/`▾`），每个节点 lazy-load 子项；
+    hover 节点露「+批注」按钮，**目录也可挂批注**
+  - 中栏：文件预览（保留窗口切片续传）或目录概览（子目录/文件列表，
+    点选下钻），顶部面包屑可点回退
+  - 右栏：当前路径的批注 + 新增表单；底部折叠区显示跨文件待办，
+    点条目跳回文件
+- annotations 数据模型扩展：
+  - `addAnnotation` / `listAnnotations` 等 CRUD 接受目录路径（按绝对路径
+    分桶，不再校验必须是文件）；目录 todo 出现在跨文件待办
+  - `loadFile` 对目录返回 `{ isDirectory: true, dirs, files, totalDirs,
+    totalFiles }`，不读 body、不走预览铁律
+  - 新增 4 项单测（目录分桶、目录概览、隐藏项、跨文件 todo 聚合）
 
 - workflow 模块精简：DOT 文本格式（Graphviz/DOT）作为唯一事实源
   - 删除 JS 执行引擎（ctx.step/parallel/agent-call/http/raw 五节点类型 + SSE）——约 700 行
     删除的复杂度，回归有向依赖图的本质：节点是状态、边是顺序、DOT 一行写完
   - 新增「DOT 编辑器 + 画布」面板：左 textarea 单色专注文本，右 React Flow 实时预览
-  - 双击空白创建节点（弹输入框 → 自动改 DOT）；右键拖拽从 A 到 B 创建 a -> b 边；
-    双击节点删除（连边同步移除）—— 画布与 DOT 双向同步，画布只是 DOT 的视图
+  - **单向数据流**：DOT 文本是唯一状态，画布是它的派生渲染（每次从 parse 结果重算布局）。
+    画布手势不维护自己的图模型，而是**直接改写 DOT 文本**——
+    双击空白创建节点 / 右键拖拽从 A 到 B 建边 / 双击节点删除（连边同步移除），
+    三者都走 `setDot()` 改文本 → 重新 parse → 重渲染。不存在"两份状态互相同步"
   - 自定义 DOT 子集解析器（digraph + [..] 属性 + 节点行 + 边行 + 分号/换行两种分隔符）
   - 静态校验：自环 / 重复边 / 悬挂边 / 空图 / 语法错
   - 存储路径改 `cwd/.nx-rp-workflows/<name>.dot`（可见、与 store.json 解耦）

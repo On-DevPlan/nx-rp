@@ -6,10 +6,11 @@
 
 - **链接（link）**：URL / OpenAPI / CLI 入口 / 工具面板——只存元信息，不抓取内容
 - **文档（doc）**：上下文 Markdown 短文——给 agent 当 prompt 上下文
-- **工作流（workflow）**：节点 + 边编排；可视化或 JSON，4 种节点类型（nxAction / agent-call / http）
+- **依赖图（deps）**：扫 `src/` 的 import 关系（.js/.mjs/.cjs/.jsx，词法清洗后匹配），
+  Graphviz WASM 渲染；面板双模式（预览/编辑 DOT 文本）+ .dot 另存/导入；只读——从源码推导
 - **提示词日志（hook）**：Claude Code UserPromptSubmit hook——每次提交的提示词按目录记进本地 JSONL；面板里有「提示词日志」页
 
-CLI 与 Web 面板同源（一条 action 同时声明 CLI 与 HTTP）。agent 通过 CLI 自助管理：写文件 → `workflow validate` → `workflow apply`。
+CLI 与 Web 面板同源（一条 action 同时声明 CLI 与 HTTP）。agent 通过 CLI 自助管理。
 
 存储：`~/.nx-rp/store.json`（全局），按 cwd 自动隔离 scope。
 
@@ -37,9 +38,10 @@ nx-rp skill get              把内置 skill 文档（SKILL.md / references/*）
 nx-rp help                   列出全部命令
 nx-rp routes                 命令 ↔ 路由对照表
 nx-rp bootstrap --json       一次性拿齐上下文
-nx-rp workflow validate <file>
-nx-rp workflow format <file>
-nx-rp workflow apply <file>
+nx-rp deps                   扫 src/ 的 import 关系 → 依赖图（DOT 文本；
+                             --json 拿 {nodes, edges, stats}；面板可视化）
+nx-rp deps save --file <f>   依赖图 DOT 落盘为 .dot 文件（graphviz 交接）
+nx-rp deps load --file <f>   读外部 .dot 文本（导入预览）
 nx-rp hook on                启用提示词日志 hook（写 ~/.claude/settings.json）
 nx-rp hook log               看当前目录的提示词记录（--all 跨目录）
 nx-rp hook off               停用（只摘自己的 entry，其余 hooks 不动）

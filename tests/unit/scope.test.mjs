@@ -13,7 +13,8 @@ function tmpStore() {
 }
 
 test('ALS: scopeStorage.run 内 cwdScope/cwdDir 读到激活目录，run 外回落 process.cwd', async () => {
-  const { scopeStorage, cwdScope, cwdDir, normalizeScope } = await import('../../src/core/paths.js');
+  const { scopeStorage } = await import('../../src/core/als.js');
+  const { cwdScope, cwdDir, normalizeScope } = await import('../../src/core/paths.js');
 
   // run 外：无上下文，回落 process.cwd()
   assert.equal(cwdScope(), normalizeScope(process.cwd()));
@@ -30,7 +31,8 @@ test('ALS: scopeStorage.run 内 cwdScope/cwdDir 读到激活目录，run 外回�
 });
 
 test('ALS: async 链上上下文自动延续（模拟 api.js 的 run 包裹）', async () => {
-  const { scopeStorage, cwdScope, normalizeScope } = await import('../../src/core/paths.js');
+  const { scopeStorage } = await import('../../src/core/als.js');
+  const { cwdScope, normalizeScope } = await import('../../src/core/paths.js');
   const inner = () => new Promise((r) => setTimeout(() => r(cwdScope()), 10));
   const got = await scopeStorage.run({ scope: 'D:\\Y\\Z', dir: 'D:\\Y\\Z' }, inner);
   assert.equal(got, normalizeScope('D:\\Y\\Z'));

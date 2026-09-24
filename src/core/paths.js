@@ -1,85 +1,146 @@
 // 路径与常量的唯一权威来源。
 //
-// 单一状态文件（存应用配置 + cwd 作用域业务数据）：
-//   ~/.nx-rp/store.json
-//
-// cwd 作用域：CLI 启动自动识别 process.cwd() 作为 scope key；同一 cwd 看到一致的 scope。
+// 单一状态文件：~/.nx-rp/store.json
+// cwd 作用域：CLI 启动自动识别 process.cwd() 作为 scope key。
 // 允许测试与多实例覆盖：环境变量 NX_RP_STORE 优先。
+//
+// 关键防 vite 外部化约定：本文件**不在顶层 import 'node:os'/'node:path'**——
+// 全部走 createRequire() 同步懒加载。前端即便触达本文件，模块级只看到 ESM 标记；
+// node 内置模块只在被调用的瞬间被 require 拉（同步；Node 端 OK；vite/浏览器
+// require 抛错 → catch 落空，前端路径访问时给出明确失败而不是返回假路径）。
+//
+// ALS 单独放在 core/als.js 隔离——本文件通过 require('./als.js') 间接访问，
+// try/catch 兜底；前端 vite externalize 时不再通过静态图触达 'node:async_hooks'。
 
-import { AsyncLocalStorage } from 'node:async_hooks';
-import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import { invalidInput } from './errors.js';
-import { createHash } from 'node:crypto';
 
-// 面板 scope 切换的穿透点：HTTP 请求携带 x-nx-rp-scope 头时，api.js 把整个请求
-// 包进 scopeStorage.run({ scope, dir })——此后该请求 async 链上所有 cwdScope() /
-// cwdDir() 都读到激活的目录，业务代码零感知。
-// 之所以在 cwdScope() 单点做：全部业务都现算调用它（无 import 期缓存），一处生效全链路；
-// CLI 进程没有 ALS 上下文，getStore() 为 null 自然回落 process.cwd()，行为不变。
-export const scopeStorage = new AsyncLocalStorage();
+const _require = createRequire(import.meta.url);
+
+// 安全懒加载：返回 null 表示「在浏览器里 / 模块不可用」。
+function _os() { try { return _require('node:os'); } catch { return null; } }
+function _path() { try { return _require('node:path'); } catch { return null; } }
+function _crypto() { try { return _require('node:crypto'); } catch { return null; } }
+
+function _homedir() {
+  const os = _os();
+  return os ? os.homedir() : null;
+}
+
+// 测试专用：覆盖 home 后所有懒加载常量走新路径。
+let _homeOverride = null;
+export function setHome(dir) { _homeOverride = dir; }
+function home() {
+  return _homeOverride || _homedir();
+}
 
 export const APP_NAME = 'nx-rp';
-export const APP_DIR = join(homedir(), `.${APP_NAME}`);
-export const STORE_PATH = join(APP_DIR, 'store.json');
 
-// Claude Code 用户级设置与 hook 日志目录。
-// let：仅测试重定向（ESM live binding，service.js import 的是同一份变量）；生产不写。
-export let CLAUDE_SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
-export let PROMPTS_DIR = join(APP_DIR, 'prompts');
-export let SKILLS_DIR = join(APP_DIR, 'skills');
+// ─── 路径常量：导出表达式 lazy —— import 时不求值，访问时才计算 ──
+export const APP_DIR = (() => {
+  const h = home();
+  const path = _path();
+  return h && path ? path.join(h, `.${APP_NAME}`) : null;
+})();
 
-// 测试专用：重定向 hook 相关路径（service.js 每次调用都现读变量）。
+export const STORE_PATH = (() => {
+  const h = home();
+  const path = _path();
+  return h && path ? path.join(h, '.nx-rp', 'store.json') : null;
+})();
+
+// hook 相关路径：let 让测试能直接重赋值；初值 lazy 求值
+export let CLAUDE_SETTINGS_PATH = (() => {
+  const h = home();
+  const path = _path();
+  return h && path ? path.join(h, '.claude', 'settings.json') : null;
+})();
+export let PROMPTS_DIR = (() => {
+  const h = home();
+  const path = _path();
+  return h && path ? path.join(h, '.nx-rp', 'prompts') : null;
+})();
+export let SKILLS_DIR = (() => {
+  const h = home();
+  const path = _path();
+  return h && path ? path.join(h, '.nx-rp', 'skills') : null;
+})();
+
 export function setHookPaths({ settingsPath, promptsDir, skillsDir } = {}) {
-  if (settingsPath) CLAUDE_SETTINGS_PATH = settingsPath;
-  if (promptsDir) PROMPTS_DIR = promptsDir;
-  if (skillsDir) SKILLS_DIR = skillsDir;
+  if (settingsPath !== undefined) CLAUDE_SETTINGS_PATH = settingsPath;
+  if (promptsDir !== undefined) PROMPTS_DIR = promptsDir;
+  if (skillsDir !== undefined) SKILLS_DIR = skillsDir;
 }
 
 // hook 日志按目录哈希分文件：文件名全 ASCII，避免 cwd 里的中文/空格进路径。
 export function promptsFileFor(cwd) {
   const norm = normalizeScope(cwd);
-  const hash = createHash('sha1').update(norm).digest('hex').slice(0, 12);
-  return { key: norm, hash, file: join(PROMPTS_DIR, `${hash}.jsonl`) };
+  const hash = (() => {
+    const c = _crypto();
+    return c ? c.createHash('sha1').update(norm).digest('hex').slice(0, 12) : null;
+  })();
+  const path = _path();
+  if (!path || !PROMPTS_DIR || !hash) return null;
+  return { key: norm, hash, file: path.join(PROMPTS_DIR, `${hash}.jsonl`) };
 }
 
 export function skillsFileFor(cwd) {
   const norm = normalizeScope(cwd);
-  const hash = createHash('sha1').update(norm).digest('hex').slice(0, 12);
-  return { key: norm, hash, file: join(SKILLS_DIR, `${hash}.jsonl`) };
+  const hash = (() => {
+    const c = _crypto();
+    return c ? c.createHash('sha1').update(norm).digest('hex').slice(0, 12) : null;
+  })();
+  const path = _path();
+  if (!path || !SKILLS_DIR || !hash) return null;
+  return { key: norm, hash, file: path.join(SKILLS_DIR, `${hash}.jsonl`) };
 }
 
 export function storePathFromEnv() {
   return process.env.NX_RP_STORE || STORE_PATH;
 }
 
-// cwd 归一化：跨平台把路径折成同一字符串（Windows 大小写不敏感 / 正反斜杠）。
-// 不同形态的「同一目录」必须产生同一个 scope key，否则 CLI 与 Web 不同步。
+// cwd 归一化：跨平台把路径折成同一字符串。
 export function normalizeScope(p) {
+  const path = _path();
+  if (!path) return p;
   try {
-    const r = resolve(p);
-    // 路径在 Windows 上大小写不敏感，归一化为小写以保证一致
+    const r = path.resolve(p);
     return process.platform === 'win32' ? r.toLowerCase() : r;
   } catch {
     return p;
   }
 }
 
+// ─── cwdScope / cwdDir（ALS 透明穿透） ────────────────────────────────
+let _alsModule = null;
+let _alsModuleTried = false;
+function getAlsModule() {
+  if (_alsModuleTried) return _alsModule;
+  _alsModuleTried = true;
+  try {
+    _alsModule = _require('./als.js');
+  } catch {
+    _alsModule = null;
+  }
+  return _alsModule;
+}
+function syncAlsStore() {
+  const mod = getAlsModule();
+  if (!mod) return null;
+  return mod.scopeStorage.getStore();
+}
+
 export function cwdScope() {
-  const s = scopeStorage.getStore();
+  const s = syncAlsStore();
   return normalizeScope(s?.scope || process.cwd());
 }
 
-// 当前作用域的**原始大小写**目录路径。cwdScope() 在 Windows 上会小写化（scope key
-// 需要稳定），但拿去做 fs 相对路径解析、镜像目录（.nx-rp-workflows）时要用原路径，
-// 否则路径里的目录名会被悄悄改写。无 ALS 上下文时回落 process.cwd()。
 export function cwdDir() {
-  const s = scopeStorage.getStore();
+  const s = syncAlsStore();
   return s?.dir || process.cwd();
 }
 
 // 名称安全校验：拒绝路径穿越、保留中文等合法命名。
-// 用于「这个字符串会被当作**目录名或标识**」的场景。
 export function assertSafeName(name, label = '名称') {
   if (!name || typeof name !== 'string' || /[\\/]/.test(name) || name.includes('..') || name.startsWith('.')) {
     throw invalidInput('非法 ' + label + ': ' + name);
@@ -87,18 +148,11 @@ export function assertSafeName(name, label = '名称') {
   return name;
 }
 
-// ─── 知识库（KB）目录：路径序列化 + 全局 docRoot ──────────────────
-//
-// 每个工作目录对应自己的知识库子目录：serializePath(cwd) 产出的目录名
-// 与 Claude Code 项目目录（~/.claude/projects/D--a-js-js-proj-nx-rp）同一
-// 序列化规则——非 [A-Za-z0-9_-] 的字符逐个替换为 '-'。D:\a_js\js_proj\nx-rp
-// → D--a-js-js-proj-nx-rp。冒号、反斜杠、点、空格、中文都进 '-'，所以序列化
-// 结果全 ASCII、跨平台安全，且与 Claude Code 的项目身份天然对齐。
+// ─── 知识库（KB）目录 ─────────────────────────────────────────────
 export function serializePath(p) {
   return normalizeScope(p).replace(/[^A-Za-z0-9_-]/g, '-');
 }
 
-// KB 目录归一化 name（防路径穿越：序列化产物里不可能有 / \ ..，这里只做断言）。
 export function assertSafeKbName(name) {
   if (!name || typeof name !== 'string' || /[\\/]/.test(name) || name.includes('..')) {
     throw invalidInput('非法知识库目录名: ' + name);
@@ -106,17 +160,17 @@ export function assertSafeKbName(name) {
   return name;
 }
 
-// 全局 docRoot（所有知识库子目录的父目录）。默认 ~/.nx-rp/doc；
-// store.json 的 settings.docRoot 可改——改后由调用方负责迁移（复制旧 KB、
-// 清理 zg 索引），paths 层只负责给出当前值。
 export function docRootFor(docRootSetting) {
-  return docRootSetting || join(APP_DIR, 'doc');
+  // 默认 docRoot 是 <APP_DIR>/doc；用户可在 store.settings.docRoot 里改。
+  // APP_DIR 为 null（前端路径）→ 返回 null 即可；调用方 (workspaceKbFor) 会
+  // 抛明确错误而不是返回假路径。
+  if (docRootSetting) return docRootSetting;
+  return APP_DIR ? `${APP_DIR}${_path().sep}doc` : null;
 }
 
-// 工作目录 → 知识库目录：<docRoot>/<serializePath(cwd)>/
 export function workspaceKbFor(cwd, docRootSetting) {
   const name = assertSafeKbName(serializePath(cwd));
-  return join(docRootFor(docRootSetting), name);
+  const path = _path();
+  if (!path) throw new Error('paths unavailable in browser');
+  return path.join(docRootFor(docRootSetting), name);
 }
-
-// 让 import 不会爆炸——badInput 在 errors.js 里，这里只做语义位置提示。

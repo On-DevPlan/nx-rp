@@ -113,42 +113,8 @@ table.levels th, table.levels td { height: var(--row-h); padding: 0 8px 0 0; bor
 table.levels tbody tr:last-child td { border-bottom: 0; }
 table.levels td.mono { font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
 
-/* ---- workflow 面板 ---- */
-.wf-root { display: flex; flex-direction: column; min-height: 480px; }
-.wf-toolbar { display: flex; gap: 8px; align-items: center; padding: 6px 0 10px; flex-wrap: wrap; }
-.wf-toolbar code { font-size: 11px; }
-.wf-body { display: grid; grid-template-columns: 200px 1fr 320px; gap: 10px; min-height: 460px; }
-.wf-palette, .wf-side, .wf-canvas-wrap, .wf-json { border: 1px solid var(--soft-2); border-radius: 6px; background: var(--paper); padding: 10px; overflow: auto; }
-.wf-canvas-wrap { padding: 0; overflow: hidden; min-height: 460px; position: relative; }
-.wf-canvas-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; color: var(--mid); font-size: 13px; z-index: 0; }
-.wf-canvas-wrap > .react-flow { z-index: 1; }
-.wf-side-title { font-size: 11px; color: var(--mid); text-transform: uppercase; letter-spacing: .5px; font-weight: 600; margin-bottom: 8px; }
-.wf-palette-item { padding: 6px 8px; border-radius: 4px; cursor: grab; border: 1px solid var(--soft-2); margin-bottom: 6px; background: var(--paper); }
-.wf-palette-item:active { cursor: grabbing; }
-.wf-palette-kind { font-family: ui-monospace, Consolas, monospace; font-size: 12px; font-weight: 600; }
 
-.wf-canvas-node { background: var(--paper); border: 1px solid var(--soft-2); border-radius: 6px; padding: 6px 10px; min-width: 140px; font-size: 12px; box-shadow: var(--shadow-relief); }
-.wf-canvas-node.selected { border-color: var(--ink); box-shadow: 0 0 0 2px rgba(0,0,0,.06); }
-.wf-canvas-node-type { font-family: ui-monospace, Consolas, monospace; font-size: 10px; color: var(--mid); text-transform: uppercase; letter-spacing: .5px; }
-.wf-canvas-node-name { font-family: ui-monospace, Consolas, monospace; font-size: 12px; font-weight: 600; margin-top: 2px; word-break: break-all; }
-.wf-canvas-node-ms { font-size: 11px; color: var(--mid); margin-top: 2px; }
-.wf-canvas-node-err { font-size: 11px; color: var(--bad); margin-top: 4px; }
-
-/* 节点状态色（背景 + 左边色条） */
-.wf-canvas-node.wf-status-idle    { background: var(--soft); border-left: 3px solid var(--soft-2); }
-.wf-canvas-node.wf-status-running { background: #cfe5ff; border-left: 3px solid #3b82f6; animation: wf-pulse 1.2s ease-in-out infinite; }
-.wf-canvas-node.wf-status-success { background: #d4f5dc; border-left: 3px solid #16a34a; }
-.wf-canvas-node.wf-status-error   { background: #ffd6d3; border-left: 3px solid var(--bad); }
-.wf-canvas-node.wf-status-skipped { background: repeating-linear-gradient(45deg, var(--soft), var(--soft) 6px, var(--soft-2) 6px, var(--soft-2) 12px); border-left: 3px solid var(--mid); }
-@keyframes wf-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(59,130,246,0.4); }
-  50%      { box-shadow: 0 0 0 4px rgba(59,130,246,0.2); }
-}
-
-.wf-inspector { font-size: 13px; margin-top: 10px; }
-.wf-side-divider { border-top: 1px solid var(--soft-2); margin: 10px 0; }
-.wf-list-row { display: flex; align-items: center; gap: 6px; padding: 4px 0; border-bottom: 1px solid var(--soft-2); }
-.wf-list-row:last-child { border-bottom: 0; }
-.wf-list-row > div:first-child { flex: 1; min-width: 0; }
-
-.wf-json { margin-top: 10px; max-height: 220px; }
+/* ---- 依赖图面板（deps）----
+   graphviz svg 自带 viewBox：max-width 即等比缩到容器宽；
+   zoom>100 时由内联 width 放开（view 里以 style.width 百分比注入）+ 原生滚动平移 */
+.deps-svg svg { max-width: 100%; height: auto; display: block; }

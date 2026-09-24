@@ -5,7 +5,7 @@
 import { ACTIONS } from './registry.js';
 import { compileRoute, applySpec } from './spec.js';
 import { toErrorPayload, httpStatusOf } from '../core/errors.js';
-import { scopeStorage } from '../core/paths.js';
+import { scopeStorage } from '../core/als.js';
 
 // 逐段比较两条模式，决定谁该先匹配：**字面量段优先于参数段**，段数多的优先。
 //

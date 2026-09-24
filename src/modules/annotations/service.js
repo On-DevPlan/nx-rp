@@ -27,10 +27,11 @@ const ANNOTATIONS_DIR = join(process.env.USERPROFILE || process.env.HOME, '.nx-r
 export let annotationsDir = ANNOTATIONS_DIR;
 export function setAnnotationsDir(dir) { annotationsDir = dir; }
 
-// 校验目标文件路径：必须绝对路径（批注挂在具体文件上，相对路径无意义）。
-function assertAbsFile(p) {
+// 校验路径：必须绝对路径（批注挂在具体文件/目录上，相对路径无意义）。
+// 文件和目录都可挂批注——目录挂批注用来记录「这块代码以后再回头看」之类语境。
+function assertAbsPath(p) {
   if (!p || typeof p !== 'string' || !/^[A-Za-z]:[\\/]/.test(p) && !p.startsWith('/')) {
-    throw invalidInput('需要绝对文件路径: ' + p);
+    throw invalidInput('需要绝对路径: ' + p);
   }
   return p;
 }
@@ -41,19 +42,48 @@ function bucketFile(file) {
 
 // ─── 文件加载器 ────────────────────────────────────────────────────
 
-// 加载目标文件内容。两种模式：
+// 加载目标文件 / 目录。两种模式：
 //   1. 窗口模式（web 渐进加载）：offset + limit 切片返回——下次从 nextOffset 续传。
 //      服务端单文件整读（200K 内开销可忽略），网络与渲染才是瓶颈，窗口切在正确层。
 //   2. 上限模式（CLI / 首查）：不带 limit 时沿用铁律——超过 cap 拒绝渲染。
+//
+// 目录特化：路径是目录时不读 body，返回 isDirectory + 子项概况，UI 用作「目录预览」。
 export async function loadFile({ file, full = false, offset = 0, limit } = {}) {
-  assertAbsFile(file);
+  assertAbsPath(file);
   let info;
   try {
     info = await stat(file);
   } catch {
-    throw notFound('文件不存在: ' + file);
+    throw notFound('路径不存在: ' + file);
   }
-  if (!info.isFile()) throw invalidInput('不是常规文件: ' + file);
+  if (!info.isFile() && !info.isDirectory()) {
+    throw invalidInput('不是常规文件或目录: ' + file);
+  }
+
+  // ── 目录：返回概览（不读 body）──
+  if (info.isDirectory()) {
+    const entries = await fsp.readdir(file, { withFileTypes: true });
+    const dirs = [];
+    const fileList = [];
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue;
+      if (e.isDirectory()) dirs.push(e.name);
+      else if (e.isFile()) fileList.push(e.name);
+    }
+    dirs.sort((a, b) => a.localeCompare(b));
+    fileList.sort((a, b) => a.localeCompare(b));
+    return {
+      file,
+      isDirectory: true,
+      totalDirs: dirs.length,
+      totalFiles: fileList.length,
+      dirs,
+      files: fileList.slice(0, MAX_DIR_ENTRIES),
+      filesTruncated: fileList.length > MAX_DIR_ENTRIES,
+    };
+  }
+
+  // ── 文件：原铁律继续生效 ──
   if (info.size > FULL_HARD_CAP) {
     throw invalidInput('文件过大（' + info.size + ' 字节 > ' + FULL_HARD_CAP + '），拒绝加载：请用行号/片段方式查看');
   }
@@ -126,7 +156,7 @@ export async function listDir({ dir } = {}) {
   try {
     info = await stat(dir);
   } catch {
-    throw notFound('目录不存在: ' + dir);
+    throw notFound('路径不存在: ' + dir);
   }
   if (!info.isDirectory()) throw invalidInput('不是目录: ' + dir);
   const entries = await fsp.readdir(dir, { withFileTypes: true });
@@ -178,7 +208,7 @@ function normalizeKind(kind) {
 }
 
 export async function listAnnotations({ file, kind, open } = {}) {
-  assertAbsFile(file);
+  assertAbsPath(file);
   let list = await readBucket(file);
   if (kind) list = list.filter((a) => a.kind === normalizeKind(kind));
   if (open) list = list.filter((a) => a.kind !== 'todo' || !a.done);
@@ -186,7 +216,7 @@ export async function listAnnotations({ file, kind, open } = {}) {
 }
 
 export async function getAnnotation({ file, id } = {}) {
-  assertAbsFile(file);
+  assertAbsPath(file);
   const list = await readBucket(file);
   const hit = list.find((a) => a.id === id);
   if (!hit) throw notFound(`批注不存在: ${id}`);
@@ -194,7 +224,7 @@ export async function getAnnotation({ file, id } = {}) {
 }
 
 export async function addAnnotation({ file, kind, body, line } = {}) {
-  assertAbsFile(file);
+  assertAbsPath(file);
   if (!body || typeof body !== 'string' || !body.trim()) throw invalidInput('批注内容不能为空');
   if (body.length > 4000) throw invalidInput('批注过长（>4000 字符）——批注是短评论，长文请进 doc 域');
   const k = normalizeKind(kind);
@@ -215,7 +245,7 @@ export async function addAnnotation({ file, kind, body, line } = {}) {
 }
 
 export async function updateAnnotation({ file, id, body, line, done } = {}) {
-  assertAbsFile(file);
+  assertAbsPath(file);
   const list = await readBucket(file);
   const hit = list.find((a) => a.id === id);
   if (!hit) throw notFound(`批注不存在: ${id}`);
@@ -237,7 +267,7 @@ export async function updateAnnotation({ file, id, body, line, done } = {}) {
 }
 
 export async function removeAnnotation({ file, id } = {}) {
-  assertAbsFile(file);
+  assertAbsPath(file);
   const list = await readBucket(file);
   const idx = list.findIndex((a) => a.id === id);
   if (idx < 0) throw notFound(`批注不存在: ${id}`);

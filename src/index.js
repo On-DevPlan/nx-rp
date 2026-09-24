@@ -9,7 +9,7 @@ export * as claudeSettings from './core/claude-settings.js';
 export * as hookIo from './core/hook-io.js';
 export * as link from './modules/link/service.js';
 export * as doc from './modules/doc/service.js';
-export * as workflow from './modules/workflow/service.js';
+export * as deps from './modules/deps/service.js';
 export * as hookPrompt from './modules/hook-prompt/service.js';
 export * as hookSkill from './modules/hook-skill/service.js';
 export * as annotations from './modules/annotations/service.js';

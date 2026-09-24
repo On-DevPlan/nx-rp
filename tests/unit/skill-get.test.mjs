@@ -166,7 +166,7 @@ test('B8 get 未知 ref → 抛错，列出可用的 references/*.md（裸名形
     (err) => {
       assert.equal(err.code, 'INVALID_INPUT');
       assert.match(err.message, /未找到 ref: nope/);
-      assert.match(err.message, /可用:.*annotations.*prompt-log.*workflow-author.*zg-recall/);
+      assert.match(err.message, /可用:.*annotations.*deps-graph.*prompt-log.*zg-recall/);
       // 不能带 .md 扩展名（用户输入的是裸名，列表对齐）
       assert.doesNotMatch(err.message, /annotations\.md/);
       return true;
