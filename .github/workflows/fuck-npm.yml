@@ -6,6 +6,10 @@
 #   2. 身份：仓库 secret NPM_TOKEN 存的是 flowot6 的 token
 #
 # 触发：push 到 main（与主仓库同款习惯），也可 workflow_dispatch 手动跑。
+#
+# 包名守门（gate step）：包名不是 flowot6 前缀时，后续所有 step 一律 skip——
+# run 显示绿勾 + 跳过标记，不红。主流水线（npm-publish.yml）负责 nx-rp 包名；
+# 本流水线只在包名迁回 flowot6 命名空间时才实际干活。
 name: fuck-npm (fallback publish)
 
 on:
@@ -26,32 +30,35 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-          cache: 'pnpm'
-
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run build
-      - run: pnpm test
+      # ── 守门：必须在任何安装/构建之前 ──
+      # 输出 ok=true/false；后续所有 step 挂 if: needs.gate 判断。
+      # 注意不能用 job 级 if——它在 checkout 之前跑，读不到 package.json。
+      - name: 守门：包名必须是 flowot6 前缀（否则本流水线无事可做）
+        id: gate
+        run: |
+          name=$(node -p "require('./package.json').name")
+          case "$name" in
+            flowot6-*)
+              echo "ok=true" >> $GITHUB_OUTPUT
+              echo "包名合规: $name——进入兜底发布流程"
+              ;;
+            *)
+              echo "ok=false" >> $GITHUB_OUTPUT
+              echo "包名 $name 归主流水线（npm-publish.yml）发，本兜底流水线跳过（不红，绿勾+skip）"
+              ;;
+          esac
 
       - name: 读版本号与包名
+        if: steps.gate.outputs.ok == 'true'
         id: pkg
         run: |
           echo "name=$(node -p "require('./package.json').name")" >> $GITHUB_OUTPUT
           echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
           echo "tag=v$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
-      - name: 包名必须是 flowot6 前缀（小号只能发自己的命名空间）
-        run: |
-          case "${{ steps.pkg.outputs.name }}" in
-            flowot6-*) echo "包名合规: ${{ steps.pkg.outputs.name }}" ;;
-            *) echo "::error::包名 ${{ steps.pkg.outputs.name }} 不是 flowot6 前缀——这个账号发不了别人的包名"; exit 1 ;;
-          esac
-
+      # 幂等检查提到构建前——包已发过时连 install/build/test 都不用跑
       - name: 已存在则跳过（幂等，与主工作流同款）
+        if: steps.gate.outputs.ok == 'true'
         id: check
         run: |
           if git rev-parse "${{ steps.pkg.outputs.tag }}" >/dev/null 2>&1; then
@@ -67,8 +74,24 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - uses: pnpm/action-setup@v4
+        if: steps.gate.outputs.ok == 'true' && steps.check.outputs.published == 'false'
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.ok == 'true' && steps.check.outputs.published == 'false'
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+        if: steps.gate.outputs.ok == 'true' && steps.check.outputs.published == 'false'
+      - run: pnpm run build
+        if: steps.gate.outputs.ok == 'true' && steps.check.outputs.published == 'false'
+      - run: pnpm test
+        if: steps.gate.outputs.ok == 'true' && steps.check.outputs.published == 'false'
+
       - name: 打 tag
-        if: steps.check.outputs.tag_exists == 'false'
+        if: steps.gate.outputs.ok == 'true' && steps.check.outputs.tag_exists == 'false'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -76,7 +99,7 @@ jobs:
           git push origin "${{ steps.pkg.outputs.tag }}"
 
       - name: 发布
-        if: steps.check.outputs.published == 'false'
+        if: steps.gate.outputs.ok == 'true' && steps.check.outputs.published == 'false'
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
