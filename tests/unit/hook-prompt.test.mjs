@@ -39,20 +39,20 @@ afterEach(async () => {
   await rm(tmp, { recursive: true, force: true });
 });
 
-test('manualSnippet 与 hookOn 实际写入的 entry 同源（防面板/写盘两处漂移）', async () => {
+test('manualSnippet 与 hookOn 实际写入的 entry 逐字节同源（防面板/写盘两处漂移）', async () => {
   await seedSettings({ env: { A: '1' } });
   const mod = await import(serviceUrl());
   await mod.hookOn();
   const settings = JSON.parse(await readFile(settingsPath, 'utf8'));
   const written = settings.hooks.UserPromptSubmit[0];
   const snippet = mod.manualSnippet().hooks.UserPromptSubmit[0];
-  // 除 marker 外逐字段一致（marker 是内部指纹，手写场景不需要）
-  const { __nx_rp_prompt_log__: _m, ...writtenCore } = written;
-  assert.deepEqual(snippet, writtenCore);
+  // 完全一致——含 marker。片段缺 marker 曾导致手工粘贴 + CLI on 出现两条并存
+  assert.deepEqual(snippet, written);
   // 字段语义抽查：async 与 timeout 必须在
   assert.equal(snippet.hooks[0].async, true);
   assert.equal(typeof snippet.hooks[0].timeout, 'number');
   assert.equal(snippet.hooks[0].command, 'nx-rp hook capture');
+  assert.equal(snippet.__nx_rp_prompt_log__, true, 'marker 必须在——off/幂等都靠它认亲');
 });
 
 test('hook status 带 snippet（面板手动添加卡片的数据源）', async () => {

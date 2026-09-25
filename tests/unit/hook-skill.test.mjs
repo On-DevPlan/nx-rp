@@ -37,21 +37,32 @@ afterEach(async () => {
   await rm(tmp, { recursive: true, force: true });
 });
 
-test('manualSnippet 与 hookOn 实际写入的 entry 同源（防面板/写盘两处漂移）', async () => {
+test('manualSnippet 与 hookOn 实际写入的 entry 逐字节同源（防面板/写盘两处漂移）', async () => {
   await seedSettings({ env: { A: '1' } });
   const mod = await import(serviceUrl());
   await mod.hookOn();
   const settings = JSON.parse(await readFile(settingsPath, 'utf8'));
-  const written = settings.hooks.PostToolUse[0];
-  const snippet = mod.manualSnippet().hooks.PostToolUse[0];
-  const { __nx_rp_skill_track__: _s, ...writtenCore } = written;
-  assert.deepEqual(snippet, writtenCore);
-  assert.equal(snippet.matcher, 'Skill', 'PostToolUse 组必须挂 Skill matcher');
-  assert.equal(snippet.hooks[0].command, 'nx-rp hook skill-track');
-  assert.equal(snippet.hooks[0].async, true);
+  // 两条落点：PostToolUse(Skill) + UserPromptSubmit(斜杠)
+  const writtenTool = settings.hooks.PostToolUse[0];
+  const writtenSlash = settings.hooks.UserPromptSubmit[1] ?? settings.hooks.UserPromptSubmit[0];
+  const snippet = mod.manualSnippet();
+  // 完全一致——含 marker。片段缺 marker 曾导致手工粘贴 + CLI on 出现两条并存
+  assert.deepEqual(snippet.hooks.PostToolUse[0], writtenTool);
+  const slashSnip = snippet.hooks.UserPromptSubmit[0];
+  assert.equal(slashSnip.matcher, writtenSlash.matcher);
+  assert.deepEqual(slashSnip.hooks, writtenSlash.hooks);
+  assert.equal(writtenTool.matcher, 'Skill', 'PostToolUse 组必须挂 Skill matcher');
+  assert.equal(writtenTool.hooks[0].command, 'nx-rp hook skill-track');
+  assert.equal(writtenSlash.hooks[0].command, 'nx-rp hook skill-slash');
+  assert.equal(writtenTool.hooks[0].async, true);
+  // marker 必须在——off/幂等都靠它认亲
+  assert.equal(writtenTool.__nx_rp_skill_track__, true);
+  assert.equal(writtenSlash.__nx_rp_skill_track_slash__, true);
+  assert.equal(snippet.hooks.PostToolUse[0].__nx_rp_skill_track__, true);
+  assert.equal(snippet.hooks.UserPromptSubmit[0].__nx_rp_skill_track_slash__, true);
 });
 
-test('hook on：只动 PostToolUse——已有提示词日志条目原样保留', async () => {
+test('hook on：写两条落点——已有提示词日志条目原样保留', async () => {
   await seedSettings({
     hooks: {
       UserPromptSubmit: [{ matcher: '', hooks: [{ type: 'command', command: 'nx-rp hook capture' }] }],
@@ -60,9 +71,58 @@ test('hook on：只动 PostToolUse——已有提示词日志条目原样保留'
   const mod = await import(serviceUrl());
   await mod.hookOn();
   const settings = JSON.parse(await readFile(settingsPath, 'utf8'));
-  assert.equal(settings.hooks.UserPromptSubmit.length, 1, '提示词日志条目不受影响');
+  assert.equal(settings.hooks.UserPromptSubmit.length, 2, '提示词日志 + 斜杠追踪并存');
   assert.equal(settings.hooks.PostToolUse.length, 1);
   assert.equal(settings.hooks.PostToolUse[0].matcher, 'Skill');
+});
+
+test('幂等认领手工条目：无 marker 但 command 一致 → on 不重复追加，off 一并摘除', async () => {
+  // 模拟用户先手动粘贴了片段（无 marker），再跑 on
+  await seedSettings({
+    hooks: {
+      PostToolUse: [
+        { matcher: 'Skill', hooks: [{ type: 'command', command: 'nx-rp hook skill-track', async: true, timeout: 10 }] },
+      ],
+      UserPromptSubmit: [
+        { matcher: '', hooks: [{ type: 'command', command: 'nx-rp hook skill-slash', async: true, timeout: 10 }] },
+      ],
+    },
+  });
+  const mod = await import(serviceUrl());
+  const r = await mod.hookOn();
+  assert.equal(r.skipped, true, '手工条目被 command 兜底认领，on 不再追加');
+  const settings = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(settings.hooks.PostToolUse.length, 1, '不产生重复条目');
+  assert.equal(settings.hooks.UserPromptSubmit.length, 1);
+
+  // status 能看到 manualCount
+  const st = await mod.hookStatus();
+  assert.equal(st.enabled, true);
+  assert.equal(st.manualCount, 2, '两条都是手工粘贴的（无 marker）');
+
+  // off 一并摘掉手工条目
+  await mod.hookOff();
+  const after = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(after.hooks?.PostToolUse, undefined, '手工 PostToolUse 组被摘除');
+  assert.equal(after.hooks?.UserPromptSubmit, undefined, '手工斜杠组被摘除');
+});
+
+test('command 兜底不误伤：他人相同 matcher 不同 command 的组保留', async () => {
+  await seedSettings({
+    hooks: {
+      PostToolUse: [
+        { matcher: 'Skill', hooks: [{ type: 'command', command: 'other-tool track' }] },
+      ],
+    },
+  });
+  const mod = await import(serviceUrl());
+  await mod.hookOn();
+  const settings = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(settings.hooks.PostToolUse.length, 2, '他人的 Skill matcher 组不被认领');
+  await mod.hookOff();
+  const after = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(after.hooks.PostToolUse.length, 1);
+  assert.equal(after.hooks.PostToolUse[0].hooks[0].command, 'other-tool track', '只摘自己的');
 });
 
 test('hook off：只摘自己的 Skill 组——他人 Edit matcher 组与提示词日志保留', async () => {
@@ -105,15 +165,47 @@ test('hook on/off 幂等 + dry-run 不写盘 + 损坏拒写', async () => {
   await assert.rejects(() => mod.hookOff(), /无法解析/);
 });
 
-test('hookStatus：独立 enabled 标志 + snippet', async () => {
+test('hookStatus：独立 enabled 标志 + 双落点标志 + snippet', async () => {
   const mod = await import(serviceUrl());
   const st0 = await mod.hookStatus();
   assert.equal(st0.enabled, false);
+  assert.equal(st0.toolHook, false);
+  assert.equal(st0.slashHook, false);
   await mod.hookOn();
   const st1 = await mod.hookStatus();
   assert.equal(st1.enabled, true);
+  assert.equal(st1.toolHook, true, 'PostToolUse 落点在');
+  assert.equal(st1.slashHook, true, '斜杠落点在');
   assert.ok(st1.snippet?.hooks?.PostToolUse?.[0]?.hooks?.[0]?.command === 'nx-rp hook skill-track');
+  assert.ok(st1.snippet?.hooks?.UserPromptSubmit?.[0]?.hooks?.[0]?.command === 'nx-rp hook skill-slash');
   assert.equal(st1.skillsDir, skillsDir);
+});
+
+test('skillSlashRaw：/斜杠 prompt + 已安装 skill → 记一行；非斜杠/未安装/坏名静默丢弃', async () => {
+  const mod = await import(serviceUrl());
+  const proj = join(tmp, 'proj');
+  await mkdir(join(skillsDir, 'nx-rp'), { recursive: true }); // "已安装"到用户级技能目录
+  await writeFile(join(skillsDir, 'nx-rp', 'SKILL.md'), '---\nname: nx-rp\n---\n', 'utf8');
+
+  // 非斜杠 prompt 不记
+  assert.equal((await mod.skillSlashRaw(JSON.stringify({ prompt: '普通消息', cwd: proj }))).ok, false);
+  // 斜杠但未安装 → 拒记（防幻影 skill）
+  const miss = await mod.skillSlashRaw(JSON.stringify({ prompt: '/not-installed', cwd: proj }));
+  assert.equal(miss.ok, false);
+  assert.equal(miss.reason, 'not-installed');
+  // 斜杠路径形态取末段；已安装 → 记录，带 via: slash
+  const ok = await mod.skillSlashRaw(JSON.stringify({
+    prompt: '/nx-rp 帮我整理链接',
+    session_id: 's2',
+    cwd: proj,
+  }));
+  assert.equal(ok.ok, true);
+  const rec = JSON.parse((await readFile(ok.file, 'utf8')).trim());
+  assert.equal(rec.skill, 'nx-rp');
+  assert.equal(rec.via, 'slash');
+  assert.equal(rec.sessionId, 's2');
+  // 坏名拒绝
+  assert.equal((await mod.skillSlashRaw(JSON.stringify({ prompt: '/bad<script>', cwd: proj }))).ok, false);
 });
 
 test('skillTrackRaw：Skill 事件 → 记一行；非 Skill / 坏名 / 坏 JSON 静默丢弃', async () => {

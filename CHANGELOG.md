@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.1 / 2026-09-26
+
+- **hook-skill：补斜杠追踪 + 修复重复记录 / snippet 冲突**（修复型）
+  - 修 1：on/off 按 command 兜底认领手工粘贴的无 marker 条目
+    - `core/claude-settings.js` 新增 `ownsGroup`：组归属 = marker 命中 **或**
+      无 marker 但 `hooks[].command` 与本工具一致
+    - 修此前「同一 Skill 调用记两次、健康分虚高 / 关掉开关 hook 还在跑」
+    - 不误伤他人同 matcher 不同 command 的组
+  - 修 2：补 slash 追踪，对标 teamai-cli `trackSlashHandler`
+    - 用户敲 `/skill-name` 走 prompt 展开、不产生 Skill 工具调用——
+      此前全部漏记
+    - 加 `UserPromptSubmit` 落点（`nx-rp hook skill-slash`）：`/skill-name`
+      提取首词 + **存在性校验**（`~/.claude/skills/<name>/SKILL.md` 或
+      项目级 `.claude/skills/` 命中才记录）——防 `/usr/bin` 等误记成幻影 skill
+    - 记录带 `via: 'slash'` 区分来源；记录文件不变
+    - `skill-status` 分开报两条落点（`工具调用[✓/✗]` / `斜杠[✓/✗]`）
+  - 修 3：手动添加 snippet 与 CLI 写盘的 entry **逐字节同源**
+    - `manualSnippet()` 含 marker（之前刻意不带是错误取舍）
+    - 面板「手动添加」粘进用户级再点「启用」不会重复；「停用」会一并摘除
+    - 顺手把斜杠落点也带进 snippet
+  - 命令兜底认亲保留——兜住历史遗留的无 marker 老片段与手写场景
+- 测试 126 项全绿（hook-prompt 4 项 + hook-skill 8 项覆盖 marker / 兜底 / 斜杠存在性）
+
 ## 0.8.0 / 2026-09-25
 
 - **删除 link 域**（破坏性变更——0.7.x 的 `nx-rp link` 命令与 `/api/links` 路由不再存在）：

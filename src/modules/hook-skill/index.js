@@ -35,10 +35,23 @@ export default {
       },
     },
     {
+      id: 'hook-skill.slash',
+      cli: ['hook', 'skill-slash'],
+      http: null,
+      summary: 'UserPromptSubmit 落点：/skill-name 斜杠调用追踪（命中已安装 skill 才记，永不报错）',
+      run: async () => {
+        try {
+          return await service.skillSlashFromStdin();
+        } catch {
+          return { ok: false };
+        }
+      },
+    },
+    {
       id: 'hook-skill.on',
       cli: ['hook', 'skill-on'],
       http: ['POST', '/api/hook-skill/on'],
-      summary: '往 ~/.claude/settings.json 写 PostToolUse(Skill) hook（幂等；--dry-run 只预览）',
+      summary: '往 ~/.claude/settings.json 写 Skill 追踪两条 hook（PostToolUse+UserPromptSubmit；幂等；--dry-run 只预览）',
       flags: { dryRun: { type: 'boolean', hint: '只预览，不写盘' } },
       run: (ctx) => service.hookOn({ dryRun: !!ctx.dryRun }),
       render: (r) => {
@@ -51,7 +64,7 @@ export default {
       id: 'hook-skill.off',
       cli: ['hook', 'skill-off'],
       http: ['POST', '/api/hook-skill/off'],
-      summary: '从 ~/.claude/settings.json 摘掉 Skill 追踪 hook（其余 hooks 不动；--dry-run 只预览）',
+      summary: '从 ~/.claude/settings.json 摘掉 Skill 追踪（两条落点一起摘，含手工粘贴的无指纹条目；--dry-run 只预览）',
       flags: { dryRun: { type: 'boolean', hint: '只预览，不写盘' } },
       run: (ctx) => service.hookOff({ dryRun: !!ctx.dryRun }),
       render: (r) => {
@@ -66,10 +79,15 @@ export default {
       http: ['GET', '/api/hook-skill/status'],
       summary: '看 Skill 追踪 hook 的开关状态与统计目录',
       run: () => service.hookStatus(),
-      render: (r) =>
-        `hook: ${r.enabled ? '已启用' : '未启用'}${r.disableAllHooks ? '（注意: disableAllHooks=true，全被关掉）' : ''}\n` +
-        `settings: ${r.settingsPath}\n` +
-        `skill 统计目录: ${r.skillsDir}`,
+      render: (r) => {
+        const tool = r.toolHook ? '✓' : '✗';
+        const slash = r.slashHook ? '✓' : '✗';
+        const manual = r.manualCount > 0 ? `\n注意: 检测到 ${r.manualCount} 条手工粘贴的条目（无内部指纹），off 时会一并摘除` : '';
+        return `hook: ${r.enabled ? '已启用' : '未启用'}${r.disableAllHooks ? '（注意: disableAllHooks=true，全被关掉）' : ''}\n` +
+          `落点: 工具调用[${tool}] PostToolUse(Skill) · 斜杠[${slash}] UserPromptSubmit\n` +
+          `settings: ${r.settingsPath}\n` +
+          `skill 统计目录: ${r.skillsDir}${manual}`;
+      },
     },
     {
       id: 'hook-skill.stats',

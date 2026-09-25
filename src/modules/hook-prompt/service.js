@@ -8,7 +8,7 @@
 import fsp from 'node:fs/promises';
 import { join } from 'node:path';
 import { CLAUDE_SETTINGS_PATH, PROMPTS_DIR, promptsFileFor, cwdScope } from '../../core/paths.js';
-import { appendOwnGroup, removeOwnGroups, toggleSettings, findOwnGroups, readSettings } from '../../core/claude-settings.js';
+import { appendOwnGroup, removeOwnGroups, toggleSettings, findOwnGroups, ownsGroup, readSettings } from '../../core/claude-settings.js';
 import { readStdin, parseHookEvent } from '../../core/hook-io.js';
 
 // 我们那条 hook entry 的指纹——on/off 靠 marker 在 hooks 数组里认亲。
@@ -35,14 +35,14 @@ function hasMarker(group) {
   return typeof group === 'object' && group !== null && group[MARKER] === true;
 }
 
-// 手动添加用的 JSON 片段（面板展示 + 复制）。与 hookOn 写盘的 entry 从同一组常量生成——
-// 面板上的代码和工具实际写进 settings.json 的永远一致，不会两处硬编码漂移。
-// 片段不含 marker 字段：那是本工具识别自己条目的内部指纹，手写场景不需要。
+// 手动添加用的 JSON 片段（面板展示 + 复制）。与 hookOn 写盘的 entry **完全同源**
+// （同一组常量生成，含 marker）——粘进配置文件的条目和工具写盘的逐字节一致，
+// on 的幂等检查直接认领（不再靠 command 兜底），off 也能摘除，不会出现两条并存。
 export function manualSnippet() {
   return {
     hooks: {
       [EVENT]: [
-        { matcher: '', hooks: [hookEntry()] },
+        { matcher: '', hooks: [hookEntry()], [MARKER]: true },
       ],
     },
   };
@@ -66,12 +66,12 @@ export async function hookOn({ dryRun = false } = {}) {
 
 export async function hookOff({ dryRun = false } = {}) {
   const settings = await readSettings();
-  const own = findOwnGroups(settings, EVENT, MARKER, hasMarker);
+  const own = findOwnGroups(settings, EVENT, MARKER, (g) => ownsGroup(g, MARKER, [HOOK_COMMAND]));
   if (own.length === 0) {
     return { status: 'ok', enabled: false, skipped: true, settingsPath: CLAUDE_SETTINGS_PATH };
   }
   const { snapshot } = await toggleSettings(
-    (next) => removeOwnGroups(next, spec()),
+    (next) => removeOwnGroups(next, { event: EVENT, marker: MARKER, commands: [HOOK_COMMAND] }),
     { dryRun },
   );
   if (dryRun) {
@@ -89,9 +89,11 @@ export async function hookStatus() {
     settings = {};   // 只读路径降级：不抛，但如实标注
     corrupt = true;
   }
-  const own = findOwnGroups(settings, EVENT, MARKER, hasMarker);
+  const own = findOwnGroups(settings, EVENT, MARKER, (g) => ownsGroup(g, MARKER, [HOOK_COMMAND]));
   return {
     enabled: own.length > 0,
+    // 手工粘贴的无 marker 片段数：>0 说明用户手动配过，提醒可能与面板按钮并存
+    manualCount: own.filter((g) => !hasMarker(g)).length,
     settingsPath: CLAUDE_SETTINGS_PATH,
     logDir: PROMPTS_DIR,
     disableAllHooks: settings.disableAllHooks === true,

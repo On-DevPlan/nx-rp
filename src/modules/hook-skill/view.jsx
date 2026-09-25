@@ -116,7 +116,9 @@ export default function HookSkillView() {
                 <dt>状态</dt>
                 <dd>
                   <span className={'tag' + (status.enabled ? ' strong' : '')}>{status.enabled ? '已启用' : '未启用'}</span>
-                  <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>PostToolUse · Skill</span>
+                  <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>
+                    工具调用[{status.toolHook ? '✓' : '✗'}] PostToolUse · 斜杠[{status.slashHook ? '✓' : '✗'}] UserPromptSubmit
+                  </span>
                   {status.disableAllHooks ? <span className="tag bad" style={{ marginLeft: 6 }}>disableAllHooks</span> : null}
                   {status.corrupt ? <span className="tag bad" style={{ marginLeft: 6 }}>settings.json 损坏</span> : null}
                 </dd>
@@ -130,6 +132,16 @@ export default function HookSkillView() {
                 <dd className="mono nowrap" title={status.skillsDir}>{status.skillsDir}</dd>
               </div>
             </dl>
+            {status.manualCount > 0 ? (
+              <p className="muted" style={{ marginTop: 8 }}>
+                检测到 {status.manualCount} 条手工粘贴的条目（无内部指纹但命令一致）——已被视为本工具的 hook，统计不会重复计数，「停用」时会一并摘除。
+              </p>
+            ) : null}
+            {status.enabled && !status.slashHook ? (
+              <p className="muted" style={{ marginTop: 8 }}>
+                斜杠落点未启用：在会话里敲 <code>/skill-name</code> 的调用不会被记录。重新「启用」即可补上（旧版本只写了 PostToolUse 一条）。
+              </p>
+            ) : null}
             {status.disableAllHooks ? (
               <p className="muted" style={{ marginTop: 8 }}>
                 全局 <code>disableAllHooks: true</code> 会一票否决所有 hooks——即使这里显示已启用，skill 调用也不会被记录。

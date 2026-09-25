@@ -23,12 +23,12 @@ test('smoke: registry 装载自检通过、三端命令表可生成', async () =
   // 两个 hook 模块平级：提示词日志 + Skill 追踪，各自独立 tab 与开关
   for (const id of [
     'hook-prompt.capture', 'hook-prompt.on', 'hook-prompt.off', 'hook-prompt.status', 'hook-prompt.log',
-    'hook-skill.track', 'hook-skill.on', 'hook-skill.off', 'hook-skill.status', 'hook-skill.stats',
+    'hook-skill.track', 'hook-skill.slash', 'hook-skill.on', 'hook-skill.off', 'hook-skill.status', 'hook-skill.stats',
     'system.recents', 'system.recents.touch',
   ]) {
     assert.ok(ids.has(id), `缺 action: ${id}`);
   }
-  // 面板操作必须有 HTTP 可达的同源路由（capture/track 是 hook 协议专属，cli-only）
+  // 面板操作必须有 HTTP 可达的同源路由（capture/track/slash 是 hook 协议专属，cli-only）
   const httpById = new Map(ACTIONS.map((a) => [a.id, a.http]));
   for (const id of ['hook-prompt.on', 'hook-prompt.off', 'hook-prompt.status', 'hook-prompt.log',
     'hook-skill.on', 'hook-skill.off', 'hook-skill.status', 'hook-skill.stats']) {
@@ -36,6 +36,7 @@ test('smoke: registry 装载自检通过、三端命令表可生成', async () =
   }
   assert.equal(httpById.get('hook-prompt.capture'), null, 'capture 是 stdin 协议入口，不应暴露 HTTP');
   assert.equal(httpById.get('hook-skill.track'), null, 'track 是 stdin 协议入口，不应暴露 HTTP');
+  assert.equal(httpById.get('hook-skill.slash'), null, 'slash 是 stdin 协议入口，不应暴露 HTTP');
   // hook 开关的外科手术性：两模块 off 互不误伤（各自只认自己的 marker）
   const offById = new Map(ACTIONS.map((a) => [a.id, a]));
   assert.equal(offById.get('hook-prompt.off').cli.join(' '), 'hook off');

@@ -84,6 +84,8 @@ export default function ManualAddCard({ snippet, eventKey }) {
           <ul className="muted" style={{ fontSize: 12, margin: '8px 0 0', paddingLeft: 18 }}>
             <li>各层是<b>合并</b>而不是覆盖：项目级配了 hooks 不会顶掉用户级的，两边都会跑。</li>
             <li>同一个事件下，本片段可以和你已有的其他 hooks 并存，互不影响。</li>
+            <li>本片段与面板「启用」按钮写盘的<b>完全一致</b>（含工具的识别指纹）：
+              粘进用户级后再点「启用」不会重复添加；「停用」也会把它一并摘掉。</li>
             <li>排查时在 Claude Code 里输入 <code>/hooks</code> 能看到每条 hook 的来源层级。</li>
           </ul>
         </div>

@@ -11,18 +11,30 @@
 import fsp from 'node:fs/promises';
 import { join } from 'node:path';
 import { CLAUDE_SETTINGS_PATH, SKILLS_DIR, skillsFileFor, cwdScope } from '../../core/paths.js';
-import { appendOwnGroup, removeOwnGroups, toggleSettings, findOwnGroups, readSettings } from '../../core/claude-settings.js';
-import { readStdin, parseHookEvent } from '../../core/hook-io.js';
+import { appendOwnGroup, removeOwnGroups, toggleSettings, findOwnGroups, ownsGroup, readSettings } from '../../core/claude-settings.js';
+import { readStdin, parseHookEvent, deriveSessionId } from '../../core/hook-io.js';
 
 // 我们那条 hook entry 的指纹——on/off 靠 marker 在 hooks 数组里认亲。
 const SKILL_COMMAND = 'nx-rp hook skill-track';
+const SLASH_COMMAND = 'nx-rp hook skill-slash';
 const MARKER = '__nx_rp_skill_track__';
+const MARKER_SLASH = '__nx_rp_skill_track_slash__';
 const EVENT = 'PostToolUse';
+const EVENT_SLASH = 'UserPromptSubmit';
 
 function skillHookEntry() {
   return {
     type: 'command',
     command: SKILL_COMMAND,
+    async: true,
+    timeout: 10,
+  };
+}
+
+function slashHookEntry() {
+  return {
+    type: 'command',
+    command: SLASH_COMMAND,
     async: true,
     timeout: 10,
   };
@@ -34,18 +46,27 @@ function spec() {
   return { event: EVENT, matcher: 'Skill', hook: skillHookEntry(), marker: MARKER };
 }
 
+// 斜杠追踪挂 UserPromptSubmit：用户敲 /skill-name 走 prompt 展开，不产生 Skill
+// 工具调用（对标 teamai-cli track-slash）——没有这条，斜杠调用的 skill 全部漏记。
+function specSlash() {
+  return { event: EVENT_SLASH, matcher: '', hook: slashHookEntry(), marker: MARKER_SLASH };
+}
+
 function hasMarker(group) {
   return typeof group === 'object' && group !== null && group[MARKER] === true;
 }
 
-// 手动添加用的 JSON 片段（面板展示 + 复制）。与 hookOn 写盘的 entry 从同一组常量生成——
-// 面板上的代码和工具实际写进 settings.json 的永远一致，不会两处硬编码漂移。
-// 片段不含 marker 字段：那是本工具识别自己条目的内部指纹，手写场景不需要。
+// 手动添加用的 JSON 片段（面板展示 + 复制）。与 hookOn 写盘的 entry **完全同源**
+// （同一组常量生成，含 marker）——粘进配置文件的条目和工具写盘的逐字节一致，
+// on 的幂等检查直接认领（不再靠 command 兜底），off 也能摘除，不会出现两条并存。
 export function manualSnippet() {
   return {
     hooks: {
       [EVENT]: [
-        { matcher: 'Skill', hooks: [skillHookEntry()] },
+        { matcher: 'Skill', hooks: [skillHookEntry()], [MARKER]: true },
+      ],
+      [EVENT_SLASH]: [
+        { matcher: '', hooks: [slashHookEntry()], [MARKER_SLASH]: true },
       ],
     },
   };
@@ -54,10 +75,11 @@ export function manualSnippet() {
 // ─── on / off / status ─────────────────────────────────────────────
 
 export async function hookOn({ dryRun = false } = {}) {
-  const { changed, snapshot } = await toggleSettings(
-    (next) => appendOwnGroup(next, spec()),
-    { dryRun },
-  );
+  const { changed, snapshot } = await toggleSettings((next) => {
+    const a = appendOwnGroup(next, spec());
+    const b = appendOwnGroup(next, specSlash());
+    return a || b;
+  }, { dryRun });
   if (dryRun) {
     return { status: 'ok', dryRun: true, enabled: true, skipped: !changed, settingsPath: CLAUDE_SETTINGS_PATH };
   }
@@ -69,14 +91,17 @@ export async function hookOn({ dryRun = false } = {}) {
 
 export async function hookOff({ dryRun = false } = {}) {
   const settings = await readSettings();
-  const own = findOwnGroups(settings, EVENT, MARKER, hasMarker);
+  const commands = [SKILL_COMMAND, SLASH_COMMAND];
+  const own = findOwnGroups(settings, EVENT, MARKER, (g) => ownsGroup(g, MARKER, commands))
+    .concat(findOwnGroups(settings, EVENT_SLASH, MARKER_SLASH, (g) => ownsGroup(g, MARKER_SLASH, commands)));
   if (own.length === 0) {
     return { status: 'ok', enabled: false, skipped: true, settingsPath: CLAUDE_SETTINGS_PATH };
   }
-  const { snapshot } = await toggleSettings(
-    (next) => removeOwnGroups(next, spec()),
-    { dryRun },
-  );
+  const { snapshot } = await toggleSettings((next) => {
+    const a = removeOwnGroups(next, { event: EVENT, marker: MARKER, commands });
+    const b = removeOwnGroups(next, { event: EVENT_SLASH, marker: MARKER_SLASH, commands });
+    return a || b;
+  }, { dryRun });
   if (dryRun) {
     return { status: 'ok', dryRun: true, enabled: false, settingsPath: CLAUDE_SETTINGS_PATH };
   }
@@ -92,9 +117,17 @@ export async function hookStatus() {
     settings = {};   // 只读路径降级：不抛，但如实标注
     corrupt = true;
   }
-  const own = findOwnGroups(settings, EVENT, MARKER, hasMarker);
+  const commands = [SKILL_COMMAND, SLASH_COMMAND];
+  const ownTool = findOwnGroups(settings, EVENT, MARKER, (g) => ownsGroup(g, MARKER, commands));
+  const ownSlash = findOwnGroups(settings, EVENT_SLASH, MARKER_SLASH, (g) => ownsGroup(g, MARKER_SLASH, commands));
+  const own = [...ownTool, ...ownSlash];
   return {
     enabled: own.length > 0,
+    // 两条落点分开报：面板能看到哪条在、哪条缺（旧版本升上来 slash 常缺失）
+    toolHook: ownTool.length > 0,
+    slashHook: ownSlash.length > 0,
+    // 手工粘贴的无 marker 片段数：>0 说明用户手动配过，off 时会被一并摘掉
+    manualCount: own.filter((g) => !hasMarker(g)).length,
     settingsPath: CLAUDE_SETTINGS_PATH,
     skillsDir: SKILLS_DIR,
     disableAllHooks: settings.disableAllHooks === true,
@@ -139,18 +172,67 @@ export async function skillTrackRaw(raw) {
   return skillRecord({ skill: name, cwd, sessionId: event.session_id });
 }
 
+// 斜杠追踪落点：stdin 是 UserPromptSubmit 事件 JSON。prompt 以 / 开头时提取
+// 首词当 skill 名——但必须命中本机已安装的 skill 才记录（skillExists 校验），
+// 防止把 /usr/bin 之类的路径、普通以 / 开头的消息误记成 skill 使用。永不抛错。
+export async function skillSlashFromStdin() {
+  const raw = await readStdin();
+  return skillSlashRaw(raw);
+}
+
+export async function skillSlashRaw(raw) {
+  const event = parseHookEvent(raw);
+  const prompt = typeof event.prompt === 'string' ? event.prompt : '';
+  if (!prompt.startsWith('/')) return { ok: false };
+  const m = prompt.match(/^\/([\w.@/-]+)/);
+  if (!m) return { ok: false };
+  // 带路径形态（/dir/skill）取末段；裸名直接用
+  const name = m[1].includes('/') ? m[1].split('/').filter(Boolean).pop() : m[1];
+  if (!name || !isValidSkillName(name)) return { ok: false };
+  if (!(await skillExists(name))) return { ok: false, reason: 'not-installed' };
+  const cwd = typeof event.cwd === 'string' && event.cwd ? event.cwd : process.cwd();
+  return skillRecord({ skill: name, cwd, sessionId: deriveSessionId(event, cwd), via: 'slash' });
+}
+
+// skill 是否真实安装（任一已知技能目录有 <name>/SKILL.md）。斜杠输入五花八门，
+// 存在性校验是防止幻影 skill 污染统计的唯一闸门（对标 teamai-cli skillExistsOnDisk）。
+const SKILL_ROOTS = [
+  (home) => join(home, '.claude', 'skills'),
+  (cwd) => join(cwd, '.claude', 'skills'),
+];
+
+export async function skillExists(name) {
+  const os = await import('node:os').catch(() => null);
+  const homeDir = os?.homedir?.() || process.env.USERPROFILE || process.env.HOME;
+  const cwd = process.cwd();
+  for (const root of SKILL_ROOTS) {
+    const p = root(homeDir);
+    if (await exists(join(p, name, 'SKILL.md'))) return true;
+    if (cwd !== homeDir) {
+      const q = root(cwd);
+      if (q !== p && await exists(join(q, name, 'SKILL.md'))) return true;
+    }
+  }
+  return false;
+}
+
+async function exists(p) {
+  try { await fsp.access(p); return true; } catch { return false; }
+}
+
 // skill 名白名单：面板要把它当展示文本渲染，控制字符直接拒绝。
 function isValidSkillName(name) {
   return /^[\w./:@+-]{1,128}$/u.test(name) && !/[<>\\^\r\n]/.test(name);
 }
 
-export async function skillRecord({ skill, cwd, sessionId }) {
+export async function skillRecord({ skill, cwd, sessionId, via }) {
   const { file } = skillsFileFor(cwd);
   const record = {
     ts: new Date().toISOString(),
     cwd,
     sessionId: sessionId || undefined,
     skill,
+    via: via || undefined, // 'slash' = 斜杠调用；缺省 = Skill 工具调用
   };
   await fsp.mkdir(SKILLS_DIR, { recursive: true });
   await fsp.appendFile(file, JSON.stringify(record) + '\n', 'utf8');

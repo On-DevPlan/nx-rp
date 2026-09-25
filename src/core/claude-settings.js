@@ -81,11 +81,34 @@ function hasMarkerField(group, marker) {
   return typeof group === 'object' && group !== null && group[marker] === true;
 }
 
+// 提取一个 hook 组里本工具的 command（组内只要任一 hook 的 command 匹配就算）。
+// 认亲的第二依据：手工粘贴的片段没有 marker 字段（manualSnippet 刻意不带内部
+// 指纹），但 command 与工具写盘的完全一致——按 command 兜底认领，否则：
+//   - on 的幂等检查只认 marker → 手工条目之外再追加一条，同一调用记两次
+//   - off 摘不掉手工条目 → 关了开关 hook 还在跑
+function groupCommands(group) {
+  if (!Array.isArray(group?.hooks)) return [];
+  return group.hooks
+    .filter((h) => typeof h?.command === 'string')
+    .map((h) => h.command);
+}
+
+// 组归属判定：有 marker 是本人；无 marker 但 command 一致也认（手工粘贴的）。
+export function ownsGroup(group, marker, commands) {
+  if (typeof group !== 'object' || group === null) return false;
+  if (hasMarkerField(group, marker)) return true;
+  const gcmds = groupCommands(group);
+  return (commands || []).some((c) => gcmds.includes(c));
+}
+
 // 通用「开」：把 {event, matcher, hook, marker} 追加进 settings（幂等）。
 // 返回 changed 布尔——调用方决定 dry-run / skipped 语义。
+// 幂等检查 = marker 或 command 任一命中：手工粘贴的无 marker 片段也算「已启用」，
+// 不再追加第二条导致同一调用记两次。
 export function appendOwnGroup(settings, { event, matcher, hook, marker }) {
-  const hasMarker = (g) => hasMarkerField(g, marker);
-  const existing = findOwnGroups(settings, event, marker, hasMarker);
+  const commands = [hook.command].filter(Boolean);
+  const own = (g) => ownsGroup(g, marker, commands);
+  const existing = findOwnGroups(settings, event, marker, own);
   if (existing.length > 0) return false;
   if (!settings.hooks || typeof settings.hooks !== 'object' || Array.isArray(settings.hooks)) {
     settings.hooks = {};
@@ -95,15 +118,15 @@ export function appendOwnGroup(settings, { event, matcher, hook, marker }) {
   return true;
 }
 
-// 通用「关」：摘掉带指定 marker 的组；事件数组空了连事件字段一起摘。
-// 返回是否真的有东西被摘。
-export function removeOwnGroups(settings, { event, marker }) {
-  const hasMarker = (g) => hasMarkerField(g, marker);
+// 通用「关」：摘掉带指定 marker 的组（或无 marker 但 command 一致的手工组）；
+// 事件数组空了连事件字段一起摘。返回是否真的有东西被摘。
+export function removeOwnGroups(settings, { event, marker, commands }) {
+  const own = (g) => ownsGroup(g, marker, commands || []);
   const groups = settings?.hooks?.[event];
   if (!Array.isArray(groups)) return false;
-  const own = groups.filter(hasMarker);
-  if (own.length === 0) return false;
-  settings.hooks[event] = groups.filter((g) => !hasMarker(g));
+  const next = groups.filter((g) => !own(g));
+  if (next.length === groups.length) return false;
+  settings.hooks[event] = next;
   if (settings.hooks[event].length === 0) delete settings.hooks[event];
   if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
   return true;
