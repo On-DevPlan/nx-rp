@@ -32,19 +32,29 @@ afterEach(async () => {
 // ─── 路径序列化 ────────────────────────────────────────────────────
 
 test('serializePath：与 Claude Code 项目目录同一规则（非字母数字→-）', () => {
-  assert.equal(pathsMod.serializePath('D:\\a_js\\js_proj\\nx-rp'), 'd--a_js-js_proj-nx-rp');
-  assert.equal(pathsMod.serializePath('C:\\Users\\zhlx'), 'c--users-zhlx');
-  // 全 ASCII：中文/空格/点全部转掉
-  assert.doesNotMatch(pathsMod.serializePath('D:\\中文 测试.项目'), /[^A-Za-z0-9_-]/);
+  // 平台各断各的：Windows 盘符路径在 win32 resolve 出盘符小写；POSIX 上 'D:\...'
+  // 不是绝对路径会被 resolve 拼到 cwd 前面——按 platform 分支，不做跨平台假断言
+  if (process.platform === 'win32') {
+    assert.equal(pathsMod.serializePath('D:\\a_js\\js_proj\\nx-rp'), 'd--a_js-js_proj-nx-rp');
+    assert.equal(pathsMod.serializePath('C:\\Users\\zhlx'), 'c--users-zhlx');
+  } else {
+    assert.equal(pathsMod.serializePath('/home/u/proj'), '-home-u-proj');
+    assert.equal(pathsMod.serializePath('/var/tmp'), '-var-tmp');
+  }
+  // 全 ASCII：中文/空格/点全部转掉（字面量直接映射，不经 resolve，两平台一致）
+  assert.doesNotMatch(pathsMod.serializePath('中文 测试.项目'), /[^A-Za-z0-9_-]/);
 });
 
 test('workspaceKbFor：cwd → <docRoot>/<序列化名>/，默认 docRoot = ~/.nx-rp/doc', () => {
-  const kb = pathsMod.workspaceKbFor('D:\\proj A\\demo');
-  assert.ok(kb.endsWith('d--proj-a-demo'.replace(/x$/, '')) || kb.endsWith('d--proj-a-demo'), kb);
+  // 用本平台真实路径（tmp 下），序列化产物随平台形态——断言只锁「末段=序列化名」关系
+  const proj = join(tmp, 'proj A', 'demo');
+  const kb = pathsMod.workspaceKbFor(proj);
+  assert.ok(kb.endsWith(pathsMod.serializePath(proj)), kb);
   assert.ok(kb.includes(join(pathsMod.APP_DIR, 'doc')));
-  // 自定义 docRoot
-  const kb2 = pathsMod.workspaceKbFor('D:\\x', 'E:\\kb-root');
-  assert.ok(kb2.startsWith('E:\\kb-root'), kb2);
+  // 自定义 docRoot：按平台给合法绝对路径
+  const customRoot = process.platform === 'win32' ? 'E:\\kb-root' : '/tmp/kb-root';
+  const kb2 = pathsMod.workspaceKbFor(proj, customRoot);
+  assert.ok(kb2.startsWith(customRoot), kb2);
 });
 
 test('workspaceKbFor 拒绝穿越：序列化产物不可能含 / \\ ..', () => {
@@ -211,7 +221,9 @@ test('zg query 结果带来源头块（知识库根/子目录/来源工作目录
     `命中文件相对路径: <知识库根>/${kbName}/<文件名>#L<起>-L<止>（如需全文，直接读该绝对路径文件）`,
   ].join('\n');
   assert.match(header, /^\[nx-rp 知识库召回\]/);
-  assert.ok(header.includes('d--temp-nxrp-zg-'), '子目录名来自序列化');
+  // 子目录名 = fakeProj 的序列化（POSIX 上 /tmp/... 首字符 / → '-'，与 win 盘符形态不同，
+  // 所以断言用「包含序列化产物」而不是写死任一平台的字面量）
+  assert.ok(header.includes(pathsMod.serializePath(fakeProj)), '子目录名来自序列化');
 });
 
 test('shared 共享知识库：--shared 条目导出到 <docRoot>/shared/（跨 scope 聚合）', async () => {
