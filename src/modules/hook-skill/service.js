@@ -194,24 +194,37 @@ export async function skillSlashRaw(raw) {
   return skillRecord({ skill: name, cwd, sessionId: deriveSessionId(event, cwd), via: 'slash' });
 }
 
-// skill 是否真实安装（任一已知技能目录有 <name>/SKILL.md）。斜杠输入五花八门，
-// 存在性校验是防止幻影 skill 污染统计的唯一闸门（对标 teamai-cli skillExistsOnDisk）。
-const SKILL_ROOTS = [
+// skill 是否真实安装。生产版扫已知目录（对标 teamai-cli skillExistsOnDisk）：
+//   ~/.claude/skills/<name>/SKILL.md  ← 用户级
+//   <cwd>/.claude/skills/<name>/SKILL.md  ← 项目级
+// 斜杠输入五花八门，存在性校验是防止幻影 skill 污染统计的唯一闸门。
+// 测试可注入额外的目录（skillRoots）——不污染真实家目录。
+const _skillRoots = [
   (home) => join(home, '.claude', 'skills'),
   (cwd) => join(cwd, '.claude', 'skills'),
 ];
+
+export function setSkillRoots(roots) {
+  if (!Array.isArray(roots)) return; // null/undefined = 还原（保留默认）
+  _skillRoots.length = 0;
+  for (const r of roots) _skillRoots.push(r);
+}
 
 export async function skillExists(name) {
   const os = await import('node:os').catch(() => null);
   const homeDir = os?.homedir?.() || process.env.USERPROFILE || process.env.HOME;
   const cwd = process.cwd();
-  for (const root of SKILL_ROOTS) {
+  const candidates = [];
+  for (const root of _skillRoots) {
     const p = root(homeDir);
-    if (await exists(join(p, name, 'SKILL.md'))) return true;
+    if (!candidates.includes(p)) candidates.push(p);
     if (cwd !== homeDir) {
       const q = root(cwd);
-      if (q !== p && await exists(join(q, name, 'SKILL.md'))) return true;
+      if (!candidates.includes(q)) candidates.push(q);
     }
+  }
+  for (const dir of candidates) {
+    if (await exists(join(dir, name, 'SKILL.md'))) return true;
   }
   return false;
 }

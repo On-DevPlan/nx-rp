@@ -15,6 +15,9 @@ let skillsDir;
 
 const pathsMod = await import(pathToFileURL(join(ROOT, 'src', 'core', 'paths.js')).href);
 const serviceUrl = () => pathToFileURL(join(ROOT, 'src', 'modules', 'hook-skill', 'service.js')).href;
+// 测试装技能用的目录——绝对不污染真实 ~/.claude/skills
+const skillsRoot = () => join(tmp, 'home-skills');
+const cwdSkillsRoot = () => join(tmp, 'proj', '.claude', 'skills');
 
 async function seedSettings(obj) {
   await mkdir(join(tmp, 'claude'), { recursive: true });
@@ -26,6 +29,10 @@ beforeEach(async () => {
   settingsPath = join(tmp, 'claude', 'settings.json');
   skillsDir = join(tmp, 'skills');
   pathsMod.setHookPaths({ settingsPath, promptsDir: join(tmp, 'prompts'), skillsDir });
+  // 注入 skill 目录覆盖——skillExists() 会同时找这里与默认家目录位置
+  const mod = await import(serviceUrl());
+  mod.setSkillRoots([() => skillsRoot(), () => cwdSkillsRoot()]);
+  await mkdir(skillsRoot(), { recursive: true });
 });
 
 afterEach(async () => {
@@ -34,6 +41,8 @@ afterEach(async () => {
     promptsDir: join(pathsMod.APP_DIR, 'prompts'),
     skillsDir: join(pathsMod.APP_DIR, 'skills'),
   });
+  const mod = await import(serviceUrl());
+  mod.setSkillRoots(null); // 还原默认（生产路径）
   await rm(tmp, { recursive: true, force: true });
 });
 
@@ -184,8 +193,10 @@ test('hookStatus：独立 enabled 标志 + 双落点标志 + snippet', async () 
 test('skillSlashRaw：/斜杠 prompt + 已安装 skill → 记一行；非斜杠/未安装/坏名静默丢弃', async () => {
   const mod = await import(serviceUrl());
   const proj = join(tmp, 'proj');
-  await mkdir(join(skillsDir, 'nx-rp'), { recursive: true }); // "已安装"到用户级技能目录
-  await writeFile(join(skillsDir, 'nx-rp', 'SKILL.md'), '---\nname: nx-rp\n---\n', 'utf8');
+  await mkdir(proj, { recursive: true });
+  // "已安装"到注入的测试目录，不污染真实家目录
+  await mkdir(join(skillsRoot(), 'nx-rp'), { recursive: true });
+  await writeFile(join(skillsRoot(), 'nx-rp', 'SKILL.md'), '---\nname: nx-rp\n---\n', 'utf8');
 
   // 非斜杠 prompt 不记
   assert.equal((await mod.skillSlashRaw(JSON.stringify({ prompt: '普通消息', cwd: proj }))).ok, false);
@@ -193,7 +204,7 @@ test('skillSlashRaw：/斜杠 prompt + 已安装 skill → 记一行；非斜杠
   const miss = await mod.skillSlashRaw(JSON.stringify({ prompt: '/not-installed', cwd: proj }));
   assert.equal(miss.ok, false);
   assert.equal(miss.reason, 'not-installed');
-  // 斜杠路径形态取末段；已安装 → 记录，带 via: slash
+  // 斜杠裸名命中已安装 → 记录，带 via: slash
   const ok = await mod.skillSlashRaw(JSON.stringify({
     prompt: '/nx-rp 帮我整理链接',
     session_id: 's2',
