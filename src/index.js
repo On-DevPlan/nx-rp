@@ -7,7 +7,6 @@ export * as errors from './core/errors.js';
 export * as store from './core/store.js';
 export * as claudeSettings from './core/claude-settings.js';
 export * as hookIo from './core/hook-io.js';
-export * as link from './modules/link/service.js';
 export * as doc from './modules/doc/service.js';
 export * as deps from './modules/deps/service.js';
 export * as hookPrompt from './modules/hook-prompt/service.js';

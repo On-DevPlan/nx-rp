@@ -1,4 +1,4 @@
-// 占位：核心层的纯逻辑单测。完整测试在 link / doc / workflow 模块到位后补。
+// 占位：核心层的纯逻辑单测。完整测试在各功能模块到位后补。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 

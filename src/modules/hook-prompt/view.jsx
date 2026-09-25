@@ -1,6 +1,6 @@
 // 提示词日志面板：开关状态卡片 + 提示词记录表格 + 手动添加卡片。
 //
-// 与 link / doc / workflow 同构：数据从 /api 拉，操作走同一条 action，
+// 与 doc / deps 同构：数据从 /api 拉，操作走同一条 action，
 // 底部 CLI 提示由命令表派生（CliHints）。开关只动本 hook 的 entry
 // （marker `__nx_rp_prompt_log__`），不影响 Skill 追踪等其他 hooks。
 import { useCallback, useEffect, useState } from 'react';

@@ -1,7 +1,7 @@
 {
   "name": "nx-rp",
-  "version": "0.7.6",
-  "description": "nx-rp（npx-repo）—— 外部信息以链接方式管理：link / doc / deps 三个域，CLI + Web 面板同源，按 cwd 自动隔离 scope",
+  "version": "0.8.0",
+  "description": "nx-rp（npx-repo）—— 项目外部上下文信息管理：doc / deps 等域，CLI + Web 面板同源，按 cwd 自动隔离 scope",
   "type": "module",
   "bin": {
     "nx-rp": "bin/nx-rp.mjs"

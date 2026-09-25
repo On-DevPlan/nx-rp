@@ -1,6 +1,6 @@
 // doc 面板：文档 CRUD + 知识库与召回（实例文件化 / 索引 / 语义召回一体）。
 //
-// 与 link 同构——body 是 textarea；下半部分是 zg 集成卡片：
+// body 是 textarea；下半部分是 zg 集成卡片：
 // 引擎状态（zg 版本/KB 目录/索引/模型/key）→ 导出/索引按钮 → 召回试查。
 // 数据流一条线：登记 → doc export → zg index → zg query。
 import { useCallback, useEffect, useState } from 'react';

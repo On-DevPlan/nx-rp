@@ -1,10 +1,9 @@
 # nx-rp（npx-repo）
 
-**外部信息以链接方式管理，让项目开发更轻。**
+**项目外部上下文信息管理，让项目开发更轻。**
 
-`nx-rp` = `npx-repo` 的缩写。给当前项目（cwd）一组**链接**，把所有「项目用得着但不该放进来」的东西（外部 API 入口、工具面板、上下文文档、CI 仪表盘、Slack 工作区、第三方脚本入口……）统一登记在 `~/.nx-rp/store.json`，按 cwd 自动隔离 scope。
+`nx-rp` = `npx-repo` 的缩写。给当前项目（cwd）统一登记项目开发用得着的外部信息（上下文文档、源码依赖图、提示词日志、Skill 追踪、文件批注……），存在 `~/.nx-rp/store.json`，按 cwd 自动隔离 scope。
 
-- **链接（link）**：URL / OpenAPI / CLI 入口 / 工具面板——只存元信息，不抓取内容
 - **文档（doc）**：上下文 Markdown 短文——给 agent 当 prompt 上下文
 - **依赖图（deps）**：扫 `src/` 的 import 关系（.js/.mjs/.cjs/.jsx，词法清洗后匹配），
   Graphviz WASM 渲染；面板双模式（预览/编辑 DOT 文本）+ .dot 另存/导入；只读——从源码推导
@@ -21,7 +20,6 @@ GitHub: https://github.com/On-DevPlan/nx-rp
 ```bash
 npx nx-rp serve               # 打开 http://127.0.0.1:7820
 npx nx-rp skill install       # 把内置 skill 装到 ~/.claude/skills
-npx nx-rp link add --name "GitHub API" --url "https://api.github.com"
 npx nx-rp routes              # 看 CLI ↔ Web 路由对照
 ```
 

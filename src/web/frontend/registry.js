@@ -3,7 +3,6 @@
 import { lazy } from 'react';
 
 export const VIEWS = [
-  { id: 'link', title: '链接', component: lazy(() => import('../../modules/link/view.jsx')) },
   { id: 'doc', title: '文档与召回', component: lazy(() => import('../../modules/doc/view.jsx')) },
   { id: 'deps', title: '依赖图', component: lazy(() => import('../../modules/deps/view.jsx')) },
   { id: 'hook-prompt', title: '提示词日志', component: lazy(() => import('../../modules/hook-prompt/view.jsx')) },

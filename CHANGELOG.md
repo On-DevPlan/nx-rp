@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.0 / 2026-09-25
+
+- **删除 link 域**（破坏性变更——0.7.x 的 `nx-rp link` 命令与 `/api/links` 路由不再存在）：
+  - 整个 `src/modules/link/` 模块下线：5 条 CRUD action（`link.list/get/add/update/remove`）、
+    CLI 命令（`nx-rp link list/get/add/update/remove`）、HTTP 路由（`/api/links*`）、Web「链接」tab
+  - store.json 的 scope 结构移除 `links` 集合（`normalizeScope` 读旧文件时自动丢弃，
+    docs / workflows / recents 不受影响）
+  - 库导出（`import { link } from 'nx-rp'`）与 eslint 分层白名单同步移除
+  - 文档同步：README / SKILL.md（frontmatter 触发词也去掉「外部链接」）/ deps-graph.md 示例
+  - 保留：`scripts/link-local.mjs`（本地开发 shim 工具，与 link 资源域无关）
+- 面板首个 tab 变为「文档与召回」
+- 测试 123 项全绿（store/deps fixture 从 link 样例换 doc 样例）
+
 ## 0.7.6 / 2026-09-24
 
 - deps 面板双模式（预览 / 编辑）+ 渲染器换血 @viz-js/viz：

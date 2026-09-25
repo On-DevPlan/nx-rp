@@ -128,7 +128,7 @@ const re = /c\\/d/; const after = 3;`;
 
 test('depsToDot：分层着色 + 跨层统计 + stats', async () => {
   await seed('src/core/store.js', 'export {};\n');
-  await seed('src/modules/link/service.js', `import { s } from '../../core/store.js';\nexport {};\n`);
+  await seed('src/modules/doc/service.js', `import { s } from '../../core/store.js';\nexport {};\n`);
   const g = await (async () => {
     const mod = await import(serviceUrl());
     return mod.depsToDot(join(tmp, 'src'));
@@ -137,7 +137,7 @@ test('depsToDot：分层着色 + 跨层统计 + stats', async () => {
   assert.equal(g.stats.edges, 1);
   assert.equal(g.stats.crossLayer, 1, 'core←modules 是跨层');
   assert.match(g.dot, /digraph nx_rp_dependencies \{/);
-  assert.match(g.dot, /"modules\.link\.service" -> "core\.store" \[color="#dc2626"\]/);
+  assert.match(g.dot, /"modules\.doc\.service" -> "core\.store" \[color="#dc2626"\]/);
 });
 
 test('空目录 / 无 src：stats 全零不抛错', async () => {

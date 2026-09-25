@@ -102,13 +102,13 @@ digraph nx_rp_dependencies {
   graph [rankdir=LR, splines=true, overlap=false, ranksep=0.6, nodesep=0.3];
   node  [shape=box, style=filled, fontname="Helvetica", fontsize=10];
   "core.store" [label="core/store", fillcolor="#dcfce7"];
-  "modules.link.service" [label="modules/link/service", fillcolor="#dbeafe"];
-  "modules.link.service" -> "core.store" [color="#dc2626"];   // 跨层 = 红
+  "modules.doc.service" [label="modules/doc/service", fillcolor="#dbeafe"];
+  "modules.doc.service" -> "core.store" [color="#dc2626"];   // 跨层 = 红
 }
 ```
 
 - 节点 id **带引号**（点分 id 含 `.`，引号形式是合法 DOT，graphviz 原生支持）
-- `label` 用斜杠路径（`modules/link/service`），人读友好
+- `label` 用斜杠路径（`modules/doc/service`），人读友好
 - 层判定 = id 首段（`core.` / `modules.` / `runtime.` / `web.`）
 
 面板用 Graphviz 官方 WASM（@viz-js/viz）渲染这个 DOT——引擎即 `dot`

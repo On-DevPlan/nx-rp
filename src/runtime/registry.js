@@ -10,14 +10,13 @@
 // tests/unit/registry.test.mjs 会断言两侧对齐，漏登记直接测试失败。
 import { cliPathsOf } from './spec.js';
 import system from '../modules/system/index.js';
-import link from '../modules/link/index.js';
 import doc from '../modules/doc/index.js';
 import deps from '../modules/deps/index.js';
 import hookPrompt from '../modules/hook-prompt/index.js';
 import hookSkill from '../modules/hook-skill/index.js';
 import annotations from '../modules/annotations/index.js';
 
-export const MODULES = [system, link, doc, deps, hookPrompt, hookSkill, annotations].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
+export const MODULES = [system, doc, deps, hookPrompt, hookSkill, annotations].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
 
 export const ACTIONS = MODULES.flatMap((m) =>
   (m.actions || []).map((a) => ({ ...a, module: m.id }))

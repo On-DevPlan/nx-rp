@@ -25,7 +25,7 @@ function normalize(input) {
 
 function currentScope(store) {
   const k = cwdScope();
-  if (!store.scopes[k]) store.scopes[k] = { links: [], docs: [], workflows: {} };
+  if (!store.scopes[k]) store.scopes[k] = { docs: [], workflows: {} };
   return store.scopes[k];
 }
 

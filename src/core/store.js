@@ -2,7 +2,7 @@
 //
 // 文件头结构注释同步：recents 是全局列表，不属于任何 scope 桶。
 // 单一 JSON 文件 ~/.nx-rp/store.json，结构：
-//   { version, settings, scopes: { [cwdScope]: { links, docs, workflows } }, recents: [...] }
+//   { version, settings, scopes: { [cwdScope]: { docs, workflows } }, recents: [...] }
 //
 // 为什么按 cwd 隔离而不是平铺：同一 nx-rp 可能被多个项目用，每项目独立范围；
 // 但用户的所有偏好（设置）还是全局共享 → 拆 settings 与 scopes。
@@ -54,9 +54,8 @@ function normalize(data) {
 }
 
 function normalizeScope(v) {
-  if (!v || typeof v !== 'object') return { links: [], docs: [], workflows: {} };
+  if (!v || typeof v !== 'object') return { docs: [], workflows: {} };
   return {
-    links: Array.isArray(v.links) ? v.links : [],
     docs: Array.isArray(v.docs) ? v.docs : [],
     workflows: v.workflows && typeof v.workflows === 'object' ? v.workflows : {},
   };
@@ -113,7 +112,7 @@ export async function mutateStore(fn) {
 export async function getCurrentScope() {
   const store = await loadStore();
   const k = _cwdScope();
-  if (!store.scopes[k]) store.scopes[k] = { links: [], docs: [], workflows: {} };
+  if (!store.scopes[k]) store.scopes[k] = { docs: [], workflows: {} };
   return { key: k, scope: store.scopes[k], store };
 }
 
@@ -121,7 +120,7 @@ export async function getCurrentScope() {
 export async function getScope(key) {
   const store = await loadStore();
   const k = (key || _cwdScope()).toLowerCase();
-  return { key: k, scope: store.scopes[k] || { links: [], docs: [], workflows: {} }, store };
+  return { key: k, scope: store.scopes[k] || { docs: [], workflows: {} }, store };
 }
 
 // 测试用：清除缓存与强制下次重读。

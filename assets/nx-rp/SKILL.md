@@ -1,25 +1,25 @@
 ---
 name: nx-rp
-description: nx-rp（npx-repo）—— 给当前项目用「链接」管理外部信息。当用户需要给某个项目登记一组外部资源链接（URL / OpenAPI / 工具面板 / Slack 频道）、整理上下文文档、或查看项目源码依赖图（import 关系、分层架构可视化）时使用。触发词：外部链接、外部资源整理、上下文文档、依赖图、依赖分析、deps、架构图、scope、cwd 作用域、nx-rp、npx-repo、提示词日志、prompt log、hook、召回、知识库、zvec-grep、zg、semantic recall、embedding、文件批注、批注、评价、待办、annotation。
+description: nx-rp（npx-repo）—— 给当前项目管理外部上下文信息。当用户需要整理项目上下文文档、或查看项目源码依赖图（import 关系、分层架构可视化）时使用。触发词：上下文文档、依赖图、依赖分析、deps、架构图、scope、cwd 作用域、nx-rp、npx-repo、提示词日志、prompt log、hook、召回、知识库、zvec-grep、zg、semantic recall、embedding、文件批注、批注、评价、待办、annotation。
 ---
 
-# nx-rp — 给当前项目接一组外部资源 + 源码依赖图
+# nx-rp — 给当前项目接一组外部上下文 + 源码依赖图
 
-**nx-rp = npx-repo**，给当前项目（cwd）一组**链接**，把所有「项目用得着但不该塞进代码库」的东西——外部 API、工具面板、上下文文档、CI 仪表盘——统一登记在 `~/.nx-rp/store.json`，按 cwd 自动隔离 scope。
+**nx-rp = npx-repo**，给当前项目（cwd）统一登记外部上下文信息，存在
+`~/.nx-rp/store.json`，按 cwd 自动隔离 scope。
 
-它**不抓取内容、不存原始文件**——只存链接 + 上下文文档。
+它**不抓取内容、不存原始文件**——只存上下文文档。
 
-## 三件核心事
+## 核心能力
 
-1. **`link`** — 登记外部资源链接（URL / OpenAPI 入口 / 工具入口 / Slack 频道）
-2. **`doc`** — 写上下文文档（Markdown 短文）；agent 拿来当 prompt 上下文
-3. **`deps`** — 源码依赖图：扫 `src/` 的 import 关系（.js/.mjs/.cjs/.jsx），输出 DOT /
+1. **`doc`** — 写上下文文档（Markdown 短文）；agent 拿来当 prompt 上下文
+2. **`deps`** — 源码依赖图：扫 `src/` 的 import 关系（.js/.mjs/.cjs/.jsx），输出 DOT /
    面板可视化（Graphviz 官方 WASM 渲染）。词法清洗后匹配（注释/字符串里的假 import 不算边），
    分层着色（core 绿 / modules 蓝 / runtime 橙 / web 紫），跨层边红色标出。
    DOT 可另存为 .dot 文件（graphviz 交接）/ 从外部 .dot 导入预览；
    面板双模式：预览（只读看图）/ 编辑（改 DOT 文本实时渲染，草稿不回写源码）
 
-另有 **两个 hook 模块**（与 link / doc / deps 平级，各自独立 tab 与开关）：
+另有 **两个 hook 模块**（与 doc / deps 平级，各自独立 tab 与开关）：
 
 - **`hook-prompt` 提示词日志**：UserPromptSubmit，把每个会话里用户提交的提示词按目录记进
   `~/.nx-rp/prompts/<cwd哈希>.jsonl`（`hook on` / `hook off` / `hook log`）
@@ -74,7 +74,6 @@ CLI 可以有 `validate` 这类纯检查命令，Web 没有按钮。
 nx-rp serve                          # 启 :7820 面板（--no-open 不弹浏览器；
                                      #   端口已有 nx-rp 面板则复用它）
 nx-rp recents                        # 最近工作目录（面板快速切换 scope 的数据源）
-nx-rp link list                      # 当前 cwd scope 下的所有链接
 nx-rp doc list
 nx-rp deps                           # 扫 src/ 的 import 关系 → 依赖图（DOT 文本）
 nx-rp deps --json                    # {dot, nodes, edges, stats} 结构化输出
@@ -104,5 +103,5 @@ nx-rp skill get [name] [ref]            # 输出 SKILL.md（默认）/ reference
 
 ## 触发场景
 
-- 用户：「帮我把项目里那 5 个外部 API 整理一下，列个清单」→ agent 写 `links.json` → `nx-rp link apply`（link 模块化后开放）
+- 用户：「整理一下这个项目的上下文文档」→ agent 写 doc 条目 → `nx-rp doc list` 给 agent 当上下文
 - 用户：「画一下这个项目的依赖图 / 哪些模块耦合了」→ `nx-rp deps` → DOT 文本或面板可视化
