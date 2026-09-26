@@ -92,7 +92,10 @@ export default function HookPromptView() {
           : logs.map((r, i) => (
             <div key={r.ts + i} className="row">
               <div className="name" style={{ width: 140, flexShrink: 0 }}>{fmt(r.ts)}</div>
-              <div className="desc">{oneLine(r.prompt)}</div>
+              <div className="desc">
+                {oneLine(r.prompt)}
+                {r.sessionId ? <span className="mono muted" style={{ fontSize: 11, display: 'block' }}>{r.sessionId}</span> : null}
+              </div>
               <div className="acts">
                 {all ? <span className="muted" style={{ fontSize: 11 }}>{r.cwd}</span> : null}
                 <button className="btn small ghost" onClick={() => setViewing(r)}>查看</button>

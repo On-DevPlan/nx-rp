@@ -85,8 +85,12 @@ export default {
       run: (ctx) => service.listPrompts({ all: !!ctx.all, limit: normalizeLimit(ctx.limit) }),
       render: (list) => {
         if (!list.length) return '（暂无记录——在启用 hook 的会话里发一条提示词后再来）';
+        // 行尾带完整 sessionId——可直接复制给 claude --resume 回到那个会话
         return list
-          .map((r) => `[${(r.ts || '').replace('T', ' ').slice(0, 19)}] ${String(r.prompt).replace(/\s+/g, ' ').slice(0, 120)}`)
+          .map((r) => {
+            const sid = r.sessionId ? `  ·  ${r.sessionId}` : '';
+            return `[${(r.ts || '').replace('T', ' ').slice(0, 19)}] ${String(r.prompt).replace(/\s+/g, ' ').slice(0, 100)}${sid}`;
+          })
           .join('\n');
       },
     },
