@@ -48,7 +48,7 @@ export default function App() {
   return (
     <>
       <header>
-        <div className="brand">nx-rp<span className="sub">外部资源链接器 + 工作流编排器</span></div>
+        <div className="brand"><img src="/logo-rounded.png" alt="" />nx-rp<span className="sub">外部资源链接器 + 工作流编排器</span></div>
         <nav>
           {views.map((v) => (
             <button key={v.id} className={'tab' + (current && current.id === v.id ? ' active' : '')}
