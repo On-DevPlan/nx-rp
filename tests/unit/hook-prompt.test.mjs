@@ -274,3 +274,29 @@ test('capture 后日志文件落在 promptsDir 下（哈希文件名，全 ASCII
   assert.match(r.file, /^[A-Za-z0-9:_\\/.-]+$/);
   assert.ok(existsSync(r.file));
 });
+
+test('listPrompts cwdFilter：子串匹配跨目录 + groups 聚合', async () => {
+  const mod = await import(serviceUrl());
+  const dirA = join(tmp, 'proj-alpha');
+  const dirB = join(tmp, 'proj-beta');
+  // ts 精度只到 ms——隔 10ms 保可排序
+  await mod.captureRecord({ prompt: 'a1', cwd: dirA });
+  await new Promise((r) => setTimeout(r, 10));
+  await mod.captureRecord({ prompt: 'a2', cwd: dirA });
+  await new Promise((r) => setTimeout(r, 10));
+  await mod.captureRecord({ prompt: 'b1', cwd: dirB });
+
+  // cwdFilter 命中 dirA — 不读 dirB 的文件
+  const filtered = await mod.listPrompts({ all: true, limit: 50, cwdFilter: 'proj-alpha' });
+  assert.equal(filtered.length, 2);
+  assert.ok(filtered.every((r) => r.cwd.toLowerCase().includes('proj-alpha')));
+
+  // groups 形状：全量聚合（不被 limit 截）
+  const { records, groups } = await mod.listPrompts({
+    all: true, limit: 1, cwdFilter: null, shape: 'with-groups',
+  });
+  assert.equal(records.length, 1, 'limit=1 时只返回一条记录');
+  assert.ok(groups.length >= 2, 'groups 是全量聚合');
+  // groups 倒序按最新 ts；首项应该是三条里最新的那条
+  assert.ok(groups[0].latestTs >= (groups[1]?.latestTs || ''));
+});

@@ -96,6 +96,9 @@ input:focus, select:focus { outline: none; border-color: var(--soft-2); box-shad
   background: var(--soft); color: var(--mid); font-size: 11px; }
 .tag.strong { background: var(--ink); color: var(--paper); }
 .tag.bad { background: var(--bad); color: #fff; }
+/* 可复制的 tag 徽标（sessionId 等）：tag 自带底色，hover 换深一档提示可点 */
+.tag.copyable { cursor: copy; }
+.tag.copyable:hover { background: var(--soft-2); color: var(--ink); }
 .kv { margin: 0; }
 .kv-row { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--soft-2); }
 .kv-row:last-child { border-bottom: 0; }

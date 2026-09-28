@@ -76,20 +76,35 @@ export default {
       id: 'hook-prompt.log',
       cli: ['hook', 'log'],
       http: ['GET', '/api/hook-prompt/log'],
-      summary: '查提示词记录（默认当前 cwd，--all 跨目录，--limit N 条）',
+      summary: '查提示词记录（默认当前 cwd，--all 跨目录，--cwd 子串筛，--groups 仅看分组）',
       // 读命令的 flag 一律不带 default——「不传」本身是有意义的输入（默认当前 cwd）
       flags: {
         all: { type: 'boolean', hint: '跨全部目录' },
         limit: { type: 'number', hint: '条数（默认 50）' },
+        cwd: { type: 'string', hint: 'cwd 子串筛选（仅 --all 生效）' },
+        groups: { type: 'boolean', hint: '仅显示 cwd 分组聚合，不列记录' },
       },
-      run: (ctx) => service.listPrompts({ all: !!ctx.all, limit: normalizeLimit(ctx.limit) }),
-      render: (list) => {
+      run: (ctx) => service.listPrompts({
+        all: !!ctx.all,
+        limit: normalizeLimit(ctx.limit),
+        cwdFilter: ctx.cwd || null,
+        shape: ctx.groups ? 'with-groups' : 'records',
+      }),
+      render: (result, ctx) => {
+        // shape=with-groups：{records, groups}
+        if (ctx.groups) {
+          const groups = Array.isArray(result) ? [] : (result.groups || []);
+          if (!groups.length) return '（无 cwd 分组数据）';
+          return groups.map((g) => `  ${g.cwd}  —  ${g.count} 条  (最近 ${(g.latestTs || '').replace('T', ' ').slice(0, 19)})`).join('\n');
+        }
+        // 默认形态：records 数组
+        const list = Array.isArray(result) ? result : (result.records || []);
         if (!list.length) return '（暂无记录——在启用 hook 的会话里发一条提示词后再来）';
-        // 行尾带完整 sessionId——可直接复制给 claude --resume 回到那个会话
+        // sessionId 独立成行给完整恢复命令——不和提示词混在一行，整行可直接复制执行
         return list
           .map((r) => {
-            const sid = r.sessionId ? `  ·  ${r.sessionId}` : '';
-            return `[${(r.ts || '').replace('T', ' ').slice(0, 19)}] ${String(r.prompt).replace(/\s+/g, ' ').slice(0, 100)}${sid}`;
+            const base = `[${(r.ts || '').replace('T', ' ').slice(0, 19)}] ${String(r.prompt).replace(/\s+/g, ' ').slice(0, 120)}`;
+            return r.sessionId ? `${base}\n    ↳ claude --resume ${r.sessionId}` : base;
           })
           .join('\n');
       },

@@ -132,30 +132,130 @@ export async function captureRecord({ prompt, cwd, sessionId }) {
 }
 
 // 查询：默认当前 cwd（按归一化 key 匹配）；--all 跨全部目录。倒序（最新在前）。
-export async function listPrompts({ all = false, limit = 50 } = {}) {
-  const files = all
-    ? (await fsp.readdir(PROMPTS_DIR).catch(() => [])).filter((f) => f.endsWith('.jsonl')).map((f) => join(PROMPTS_DIR, f))
-    : [promptsFileFor(process.cwd()).file];
-  const out = [];
-  for (const file of files) {
+//
+// 默认返回**记录数组**（兼容历史接口）；`{ shape: 'with-groups' }` 时返回
+// `{ records, groups }`，面板/CLI 按需取分组聚合。
+//
+// cwd 筛选（仅 all 模式）：cwdFilter 子串匹配；文件级早停 + ts 早停：
+//   - 文件名 = cwd sha1 前 12 位，无法反推 cwd——扫首行拿 cwd 比对，不匹配整文件跳过。
+//   - 单文件按 ts 倒序遍历（append-only，文件尾即最新），命中 limit 立即跳出该文件。
+export async function listPrompts({ all = false, limit = 50, cwdFilter = null, shape = 'records' } = {}) {
+  if (all) {
+    const { records, groups } = await collectAll({ limit, cwdFilter });
+    return shape === 'with-groups' ? { records, groups } : records;
+  }
+  // 单文件模式不涉及聚合（cwd 已锁）
+  return collectScope({ limit });
+}
+
+async function collectScope({ limit }) {
+  const file = promptsFileFor(process.cwd()).file;
+  let raw;
+  try {
+    raw = await fsp.readFile(file, 'utf8');
+  } catch {
+    return [];
+  }
+  const key = cwdScope();
+  return parseLines(raw)
+    .filter((r) => typeof r.cwd === 'string' && promptsFileFor(r.cwd).key === key)
+    .slice(-limit)
+    .reverse();
+}
+
+async function collectAll({ limit, cwdFilter }) {
+  const needle = typeof cwdFilter === 'string' ? cwdFilter.trim().toLowerCase() : '';
+  let files;
+  try {
+    files = (await fsp.readdir(PROMPTS_DIR)).filter((f) => f.endsWith('.jsonl'));
+  } catch {
+    return { records: [], groups: [] };
+  }
+  const matched = [];
+  for (const f of files) {
+    const full = join(PROMPTS_DIR, f);
     let raw;
     try {
-      raw = await fsp.readFile(file, 'utf8');
+      raw = await fsp.readFile(full, 'utf8');
     } catch {
-      continue; // 文件不存在 = 还没有记录
+      continue;
     }
-    for (const line of raw.split('\n')) {
+    if (needle) {
+      // 文件级早停：首行 JSON 拿 cwd，匹配不上整文件跳过
+      const head = firstNonEmptyLine(raw);
+      if (!head) continue;
+      let parsed;
+      try { parsed = JSON.parse(head); } catch { continue; }
+      const cwd = typeof parsed.cwd === 'string' ? parsed.cwd : '';
+      if (!cwd.toLowerCase().includes(needle)) continue;
+    }
+    matched.push(raw);
+  }
+
+  // 跨文件按 ts 倒序归并：每个文件只 parse 出尾部 N 条即可（ts 单调，尾部即最新）。
+  // groups 是「所有 tail 扫描到」的 cwd 聚合——不被 limit 截（用户切 --groups 时
+  // 仍能看到全量目录列表）。records 是归并到 limit 的最新前 N。
+  //
+  // TAIL_PER_FILE：限单文件 parse 上限。limit*4 起步够聚合（覆盖面板默认 200×4=800）；
+  // 用户实际 cwd 数量远小于文件数时等于零浪费；存在「一个 cwd 一文件数百条」罕见场景
+  // 时会被聚合截到 800 —— 取舍：保留文件扫描 O(1) 内存的简洁、接受聚合有界。
+  const TAIL_PER_FILE = Math.max(limit * 4, 200);
+  const tails = matched.map((raw) => {
+    const lines = raw.split('\n');
+    const out = [];
+    for (let i = lines.length - 1; i >= 0 && out.length < TAIL_PER_FILE; i--) {
+      const line = lines[i];
       if (!line.trim()) continue;
-      try {
-        out.push(JSON.parse(line));
-      } catch { /* 坏行跳过 */ }
+      try { out.push(JSON.parse(line)); } catch { /* 坏行跳过 */ }
+    }
+    return out;
+  });
+
+  // 聚合：来自所有 tail（与 limit 解耦）
+  const groupMap = new Map();
+  for (const t of tails) {
+    for (const r of t) {
+      const cwd = typeof r.cwd === 'string' && r.cwd ? r.cwd : '(未知)';
+      const g = groupMap.get(cwd) || { cwd, count: 0, latestTs: '' };
+      g.count += 1;
+      if (typeof r.ts === 'string' && (!g.latestTs || r.ts > g.latestTs)) g.latestTs = r.ts;
+      groupMap.set(cwd, g);
     }
   }
-  if (!all) {
-    const key = cwdScope();
-    return out.filter((r) => typeof r.cwd === 'string' && promptsFileFor(r.cwd).key === key)
-      .slice(-limit).reverse();
+
+  // k 路归并：每个文件看作倒序流，弹出 ts 最大的入 records，达到 limit 即停。
+  // tail 数组头 = 最新（倒序遍历先 push 进来的）；比较取头部；取出用 shift（O(N) 但
+  // 单文件尾巴顶多几百条 + 文件数小，可接受）。
+  const records = [];
+  while (records.length < limit) {
+    let bestIdx = -1;
+    let bestTs = '';
+    for (let i = 0; i < tails.length; i++) {
+      if (!tails[i].length) continue;
+      const head = tails[i][0];
+      const t = (head && head.ts) || '';
+      if (bestIdx < 0 || t > bestTs) { bestTs = t; bestIdx = i; }
+    }
+    if (bestIdx < 0) break; // 所有文件流都空了
+    records.push(tails[bestIdx].shift());
   }
-  out.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0)); // 稳定：同 ts 保持追加序
-  return out.slice(0, limit);
+
+  const groups = Array.from(groupMap.values()).sort((a, b) => (a.latestTs < b.latestTs ? 1 : a.latestTs > b.latestTs ? -1 : 0));
+  return { records, groups };
+}
+
+function parseLines(raw) {
+  const out = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try { out.push(JSON.parse(line)); } catch { /* 坏行跳过 */ }
+  }
+  return out;
+}
+
+function firstNonEmptyLine(raw) {
+  for (const line of raw.split('\n')) {
+    if (line.trim()) return line;
+  }
+  return null;
 }

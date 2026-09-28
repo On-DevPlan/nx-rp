@@ -5,7 +5,7 @@
 // （marker `__nx_rp_prompt_log__`），不影响 Skill 追踪等其他 hooks。
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../../web/frontend/api/client.js';
-import { Modal, useDialog, useGuard, useToast } from '../../web/frontend/components/ui.jsx';
+import { Modal, useDialog, useGuard, useToast, Copyable } from '../../web/frontend/components/ui.jsx';
 import { CliHints } from '../../web/frontend/components/CliHints.jsx';
 import { useStore } from '../../web/frontend/store.jsx';
 import ManualAddCard from '../../web/frontend/components/ManualAddCard.jsx';
@@ -16,7 +16,9 @@ export default function HookPromptView() {
   const { boot } = useStore();
   const [status, setStatus] = useState(null);
   const [logs, setLogs] = useState(null);
+  const [groups, setGroups] = useState([]);
   const [all, setAll] = useState(false);
+  const [cwdFilter, setCwdFilter] = useState(''); // 空=全部；非空=该 cwd 子串筛
   const [loadError, setLoadError] = useState(null);
   const [viewing, setViewing] = useState(null);
   const guard = useGuard();
@@ -27,12 +29,27 @@ export default function HookPromptView() {
     setLoadError(null);
     try {
       setStatus(await api('/api/hook-prompt/status'));
-      setLogs(await api('/api/hook-prompt/log' + (all ? '?all=true&limit=' + LIMIT : '?limit=' + LIMIT)));
+      const qs = new URLSearchParams();
+      qs.set('limit', String(LIMIT));
+      if (all) {
+        qs.set('all', 'true');
+        if (cwdFilter) qs.set('cwd', cwdFilter);
+        qs.set('shape', 'with-groups'); // 跨目录模式顺手拿分组
+      }
+      const res = await api('/api/hook-prompt/log?' + qs.toString());
+      // 默认形态：records 数组；with-groups：{records, groups}
+      if (all && res && Array.isArray(res.groups)) {
+        setLogs(res.records);
+        setGroups(res.groups);
+      } else {
+        setLogs(Array.isArray(res) ? res : []);
+        setGroups([]);
+      }
     } catch (e) {
       // 失败要如实呈现——不能让「请求失败」伪装成「暂无记录」
       setLoadError(e.message || '加载失败');
     }
-  }, [all]);
+  }, [all, cwdFilter]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -83,21 +100,50 @@ export default function HookPromptView() {
           <button className="btn small" onClick={enable} disabled={!status || status.enabled || status.corrupt}>启用</button>
           <button className="btn small ghost" onClick={disable} disabled={!status || !status.enabled || status.corrupt}>停用</button>
           <label className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8 }}>
-            <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} style={{ height: 'auto' }} />
+            <input type="checkbox" checked={all} onChange={(e) => {
+              setAll(e.target.checked);
+              setCwdFilter(''); // 切到「非跨目录」时清掉筛选；切回来也要重选
+            }} style={{ height: 'auto' }} />
             跨全部目录
           </label>
+          {all ? (
+            <>
+              <select
+                value={cwdFilter}
+                onChange={(e) => setCwdFilter(e.target.value)}
+                title="按 cwd 路径分组筛选"
+                style={{ minWidth: 280, maxWidth: 480 }}
+              >
+                <option value="">全部路径（{groups.length} 个）</option>
+                {groups.map((g) => (
+                  <option key={g.cwd} value={g.cwd}>
+                    {g.cwd}  —  {g.count} 条
+                  </option>
+                ))}
+              </select>
+              {cwdFilter ? (
+                <button className="btn small ghost" onClick={() => setCwdFilter('')}>清除</button>
+              ) : null}
+            </>
+          ) : null}
         </div>
         {!logs ? <div className="empty">{loadError ? '无法加载' : '加载中…'}</div>
           : logs.length === 0 ? <div className="empty">（暂无记录——在启用 hook 的会话里发一条提示词后再来）</div>
           : logs.map((r, i) => (
             <div key={r.ts + i} className="row">
               <div className="name" style={{ width: 140, flexShrink: 0 }}>{fmt(r.ts)}</div>
-              <div className="desc">
-                {oneLine(r.prompt)}
-                {r.sessionId ? <span className="mono muted" style={{ fontSize: 11, display: 'block' }}>{r.sessionId}</span> : null}
-              </div>
+              <div className="desc">{oneLine(r.prompt)}</div>
               <div className="acts">
                 {all ? <span className="muted" style={{ fontSize: 11 }}>{r.cwd}</span> : null}
+                {r.sessionId ? (
+                  <Copyable
+                    text={r.sessionId}
+                    className="tag mono"
+                    title={r.sessionId + '\n点击复制完整 sessionId，用于 claude --resume'}
+                  >
+                    {String(r.sessionId).slice(0, 8)}
+                  </Copyable>
+                ) : null}
                 <button className="btn small ghost" onClick={() => setViewing(r)}>查看</button>
               </div>
             </div>
@@ -149,9 +195,24 @@ export default function HookPromptView() {
       {viewing && (
         <Modal title={fmt(viewing.ts)} onClose={() => setViewing(null)}>
           <p className="muted mono" style={{ fontSize: 11, marginBottom: 8 }}>
-            {viewing.cwd}{viewing.sessionId ? ' · ' + viewing.sessionId : ''}
+            {viewing.cwd}
+            {viewing.sessionId ? <span title="sessionId"> · {viewing.sessionId}</span> : null}
           </p>
           <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 13 }}>{viewing.prompt}</pre>
+          {viewing.sessionId ? (
+            <div
+              className="toolbar"
+              style={{ marginTop: 12, paddingTop: 10, borderTop: 'var(--border)', fontSize: 12 }}
+            >
+              <Copyable
+                text={`claude --resume ${viewing.sessionId}`}
+                title="点击复制恢复命令"
+              >
+                <code>claude --resume {viewing.sessionId}</code>
+              </Copyable>
+              <span className="muted" style={{ fontSize: 11 }}>← 点击复制，粘贴到终端即可回到该会话</span>
+            </div>
+          ) : null}
         </Modal>
       )}
       {dialogNode}
