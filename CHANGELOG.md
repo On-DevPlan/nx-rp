@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.4 / 2026-09-28
+
+- **hook-prompt：提示词日志 sessionId 落地 + UI / CLI 展示 + 按 cwd 分组筛选**（特性型）
+  - 落点：捕获 UserPromptSubmit payload 的 `session_id`，写入 JSONL 记录的 `sessionId` 字段
+    - 半截/坏 JSON 走 `salvageFields` 抢救，保证日志写入不丢
+    - 测试覆盖正常事件 + 半截 JSON 两种路径
+  - 展示：
+    - 面板列表行：sessionId 收进行尾操作区做成小胶囊徽标（短码 + 点击复制完整 ID），
+      与提示词文本物理隔离；查看弹窗底部给可点击复制的 `claude --resume <sid>` 整条命令
+    - CLI `nx-rp hook log`：每条记录下方独立一行给恢复命令，整行可直接复制执行
+  - 分组筛选：
+    - `nx-rp hook log --all --groups`：仅显示 cwd 分组聚合，按最新 ts 倒序
+    - `nx-rp hook log --all --cwd <substr>`：按 cwd 子串筛选（不区分大小写）
+    - 面板「跨全部目录」勾选后右侧出现 cwd 下拉，每项带该路径的提示词条数；
+      选定后表格只显示该 cwd 的记录
+  - 性能：跨目录查询重写为「文件级早停 + 单文件 k 路归并达到 limit 全停」
+    - cwdFilter 通过文件首行 JSON 拿 cwd 提前跳过不相关文件
+    - groups 聚合与 limit 解耦（`TAIL_PER_FILE = max(limit*4, 200)` 单文件扫描上限），
+      limit 缩到 1 仍能看到完整 cwd 列表
+  - 测试 19 项全绿（含 cwdFilter 子串匹配 + groups 全量聚合 2 项新测）
+
 ## 0.8.1 / 2026-09-26
 
 - **hook-skill：补斜杠追踪 + 修复重复记录 / snippet 冲突**（修复型）
