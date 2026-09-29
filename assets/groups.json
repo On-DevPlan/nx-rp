@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "$comment": "group 名 → skill 名列表的别名表。当前 group 名 ≡ skill 名（一对一）；skills 是数组，为「一个 group 含多个 skill」预留。路径恒由 assets/<skills[i]>/ 推导——本文件只做聚合，不是第二条事实源。",
+  "groups": {
+    "nx-rp": {
+      "skills": ["nx-rp"],
+      "summary": "项目外部上下文管理（doc / deps / hook / 批注 / 召回）"
+    },
+    "rp-loop": {
+      "skills": ["rp-loop"],
+      "summary": "自引用循环（Ralph 技术）——迭代到完成，Stop hook 拦退出"
+    }
+  }
+}

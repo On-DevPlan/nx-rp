@@ -142,8 +142,94 @@ async function cmdVersion() {
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 
-const ASSETS_ROOT = resolve(HERE, '..', '..', 'assets');
+// 资产根**在调用时**求值（不是模块加载时）——否则测试的 import 顺序会决定行为。
+// NX_RP_ASSETS_ROOT 覆盖是测试"多 skill group / 空清单"分支的唯一手段
+// （照 paths.js 的 storePathFromEnv 惯例）。
+function assetsRoot() {
+  return process.env.NX_RP_ASSETS_ROOT || resolve(HERE, '..', '..', 'assets');
+}
 const DEFAULT_SKILLS_DIR = join(homedir(), '.claude', 'skills');
+
+// ─── group 清单 ────────────────────────────────────────────────────
+//
+// assets/groups.json 是「group 名 → skill 名列表」的**别名表**，只做聚合，
+// 不做第二条事实源：路径恒由 assets/<skills[i]>/ 推导，目录结构不变。
+// 当前 group 名 ≡ skill 名（一对一）；skills 是数组，为将来一对多留余地。
+//
+// 分层降级（读路径绝不炸，但作者错误要吼）：
+//   文件不存在 / JSON 损坏 → 目录扫描兜底，不崩（且损坏时 stderr 一行警告）
+//   JSON 合法但 schema 错   → 抛 INVALID_INPUT（这是打包/作者事故，静默会藏 bug）
+function listAssetDirs() {
+  const root = assetsRoot();
+  if (!existsSync(root)) return [];
+  return readdirSync(root)
+    .filter((d) => {
+      try {
+        return statSync(join(root, d)).isDirectory() && existsSync(join(root, d, 'SKILL.md'));
+      } catch {
+        return false;
+      }
+    })
+    .sort();
+}
+
+function loadGroups() {
+  const root = assetsRoot();
+  const file = join(root, 'groups.json');
+  // 目录扫描兜底：group 名即含 SKILL.md 的目录名
+  const fallback = () => ({ map: Object.fromEntries(listAssetDirs().map((d) => [d, { skills: [d] }])), source: 'assets-dirs' });
+
+  if (!existsSync(file)) return fallback();
+
+  let raw;
+  try {
+    raw = readFileSync(file, 'utf8');
+  } catch {
+    return fallback();
+  }
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    process.stderr.write(`nx-rp: 忽略损坏的 groups.json（${file}）—— 已降级为目录扫描\n`);
+    return fallback();
+  }
+
+  // schema 校验：读得出来但没意义 = 作者写错了，不能静默
+  if (!data || typeof data !== 'object' || Array.isArray(data) || !data.groups
+      || typeof data.groups !== 'object' || Array.isArray(data.groups)) {
+    throw _invalidInput(`groups.json schema 非法（${file}）：顶层应为 {version, groups:{name:{skills:[...]}}}`);
+  }
+  const map = {};
+  for (const [name, v] of Object.entries(data.groups)) {
+    if (!v || typeof v !== 'object' || Array.isArray(v) || !Array.isArray(v.skills) || v.skills.length === 0) {
+      throw _invalidInput(`groups.json 的 group「${name}」非法（${file}）：应为 {skills:[非空字符串数组]}，收到 ${JSON.stringify(v)}`);
+    }
+    for (const s of v.skills) {
+      if (typeof s !== 'string' || !s || s.includes('..') || s.startsWith('.') || /[\\/]/.test(s)) {
+        throw _invalidInput(`groups.json 的 group「${name}」含非法 skill 名: ${JSON.stringify(s)}（${file}）`);
+      }
+    }
+    // 同名去重：避免重复三态与重复计数
+    map[name] = { skills: [...new Set(v.skills)], summary: typeof v.summary === 'string' ? v.summary : '' };
+  }
+  return { map, source: 'manifest' };
+}
+
+// 可用的 group 名 = 清单键 ∪ 资产目录名（降级时两者可能各有一半）
+function availableGroups() {
+  const { map } = loadGroups();
+  return [...new Set([...Object.keys(map), ...listAssetDirs()])].sort();
+}
+
+function resolveGroup(name) {
+  const { map, source } = loadGroups();
+  const entry = map[name];
+  if (!entry) {
+    throw _invalidInput(`未知 group: ${name}（可用: ${availableGroups().join(', ')}）—— group 名即 skill 名，也可直接 nx-rp skill install ${name}`);
+  }
+  return { group: name, skills: entry.skills, summary: entry.summary || '', source };
+}
 
 function hashFile(p) {
   const h = createHash('md5');
@@ -231,24 +317,60 @@ function parseSkillArgs(argv) {
   return { positional, flags };
 }
 
+// 批量安装：对每个 skill 名跑一次 installOne，再按「最重态」聚合。
+//
+// 返回值形状的取舍（约束：不能影响原命令）：
+//   skills.length === 1 → 返回**与今天完全相同**的对象（仅在给了 --group 时多一个
+//     group 字段），这样 render 的四个分支、runGet 的消费点、既有测试全都不用动
+//   skills.length > 1   → {status, group, skills:[...]}，用显式 group 字段判别，
+//     **不做形状嗅探**（长度 1 的退化结果里也可能带 skills 数组）
 async function runInstall(argv) {
   const { positional, flags } = parseSkillArgs(argv);
   const force = !!flags.force;
   const to = flags.to || DEFAULT_SKILLS_DIR;
 
-  // 剥掉子命令名（argv[0] === 'install'），位置参数里第一个才是 skill 名
+  // 剥掉子命令名（argv[0] === 'install'）
   const nameArgs = positional.slice(1);
   if (nameArgs.length > 1) {
     throw _invalidInput(`只接受一个 skill 名（收到: ${nameArgs.join(', ')}）`);
   }
-  // 默认名 = 包名
-  const skillName = nameArgs[0] || flags.group || 'nx-rp';
 
-  const src = join(ASSETS_ROOT, skillName);
+  // group 与位置参数二选一：同时给 = 重复输入（二者等价），报错比猜意图友好
+  if (flags.group && nameArgs.length > 0) {
+    throw _invalidInput(`位置参数「${nameArgs[0]}」与 --group=${flags.group} 都给了（二者等价，二选一）`);
+  }
+
+  let skills;
+  let group;
+  if (flags.group) {
+    const r = resolveGroup(flags.group);
+    skills = r.skills;
+    group = r.group;
+  } else {
+    skills = [nameArgs[0] || 'nx-rp']; // 约束：无参数仍装 nx-rp
+  }
+
+  const results = [];
+  for (const name of skills) results.push({ name, ...(await installOne(name, { to, force })) });
+
+  if (results.length === 1) {
+    return group === undefined ? results[0] : { ...results[0], group };
+  }
+  // 最重态：任一 conflict → conflict；否则全 skipped → ok/skipped；否则 ok
+  const anyConflict = results.some((r) => r.status === 'conflict');
+  const allSkipped = results.every((r) => r.status === 'ok' && r.skipped);
+  return {
+    status: anyConflict ? 'conflict' : 'ok',
+    group,
+    skills: results,
+    ...(allSkipped ? { skipped: true } : {}),
+  };
+}
+
+async function installOne(skillName, { to, force }) {
+  const src = join(assetsRoot(), skillName);
   if (!existsSync(src) || !existsSync(join(src, 'SKILL.md'))) {
-    const available = existsSync(ASSETS_ROOT)
-      ? readdirSync(ASSETS_ROOT).filter((d) => statSync(join(ASSETS_ROOT, d)).isDirectory())
-      : [];
+    const available = listAssetDirs();
     throw _invalidInput(`未找到内置 skill: ${skillName}（可用: ${available.join(', ')}）`);
   }
 
@@ -284,13 +406,32 @@ async function runInstall(argv) {
 //   - --force：静默忽略。get 的语义是"读"，不应被 install 副作用覆盖；向前兼容不抛错。
 //   - ref 路径解析：缺省 SKILL.md；带分隔符或 ./ 开头走资产根相对解析（assertInside 兜底）；
 //     裸名先查 references/<name>.md，再查 <name>.md。
+//   - --group：**只允许单选**。展开出 >1 个 skill 时要求显式指定——
+//     多份文档拼一起会破坏上面"prefix → 文档 → install 状态"的三段结构。
+//     给了 --group 时名字槽已被占用，位置参数**左移一位**（positional[1] 当 ref）。
 async function runGet(argv) {
   const { positional, flags } = parseSkillArgs(argv);
-  const skillName = positional[1] || flags.group || 'nx-rp';
-  const ref = positional[2]; // 缺省 → resolveRefDoc 默认走 SKILL.md
-  if (positional.length > 3) {
-    throw _invalidInput(`位置参数过多（收到: ${positional.slice(3).join(', ')}）—— 用法: nx-rp skill get [name] [ref]`);
+
+  let skillName;
+  let group;
+  if (flags.group) {
+    const r = resolveGroup(flags.group);
+    if (r.skills.length > 1) {
+      throw _invalidInput(`group「${r.group}」含多个 skill（${r.skills.join(', ')}），请显式指定：nx-rp skill get <name> [ref]`);
+    }
+    skillName = r.skills[0];
+    group = r.group;
+    // 名字槽被 --group 占用 → 位置参数左移：argv 里第 1 个位置参数是 ref
+    if (positional.length > 2) {
+      throw _invalidInput(`--group 模式下位置参数过多（收到: ${positional.slice(2).join(', ')}）—— 用法: nx-rp skill get --group=<g> [ref]`);
+    }
+  } else {
+    skillName = positional[1] || 'nx-rp';
+    if (positional.length > 3) {
+      throw _invalidInput(`位置参数过多（收到: ${positional.slice(3).join(', ')}）—— 用法: nx-rp skill get [name] [ref]`);
+    }
   }
+  const ref = flags.group ? positional[1] : positional[2]; // 缺省 → resolveRefDoc 默认走 SKILL.md
 
   const doc = resolveRefDoc(skillName, ref);
 
@@ -305,16 +446,14 @@ async function runGet(argv) {
     content: doc.content,
     contentBytes: doc.bytes,
     install: installResult,
+    ...(group === undefined ? {} : { group }),
   };
 }
 
 function resolveRefDoc(skillName, ref) {
-  const root = join(ASSETS_ROOT, skillName);
+  const root = join(assetsRoot(), skillName);
   if (!existsSync(root)) {
-    const available = existsSync(ASSETS_ROOT)
-      ? readdirSync(ASSETS_ROOT).filter((d) => statSync(join(ASSETS_ROOT, d)).isDirectory())
-      : [];
-    throw _invalidInput(`未找到内置 skill: ${skillName}（可用: ${available.join(', ')}）`);
+    throw _invalidInput(`未找到内置 skill: ${skillName}（可用: ${listAssetDirs().join(', ')}）`);
   }
 
   // 路径穿越防护（任何分隔符下的 '..' 段都拒）
@@ -374,16 +513,35 @@ async function rmrf(p) {
   await rm(p, { recursive: true, force: true });
 }
 
+// 列出 group → skill 映射。带上 source（manifest / assets-dirs），
+// 把「清单驱动还是降级到目录扫描」显式暴露出来——这是降级路径唯一能被观测的地方。
+function runGroups(argv) {
+  const { flags } = parseSkillArgs(argv);
+  if (flags.group) throw _invalidInput('skill groups 不接受 --group（它就是用来列 group 的）');
+  const { map, source } = loadGroups();
+  const names = availableGroups();
+  return names.map((name) => ({
+    group: name,
+    skills: map[name]?.skills || [name],
+    summary: map[name]?.summary || '',
+    source,
+  }));
+}
+
 async function cmdSkill(rest) {
   // 顶层 dispatcher：子命令在 rest[0] 里分发。
-  // install 与 get 共用 runInstall，避免两块几乎一样的参数解析与拷贝逻辑漂移。
+  // install 与 get 共用 parseSkillArgs / runInstall，避免参数解析与拷贝逻辑漂移。
   const argv = rest || [];
   const sub = argv[0];
   if (sub === 'install') return runInstall(argv);
   if (sub === 'get') return runGet(argv);
+  if (sub === 'groups') return runGroups(argv);
   throw _invalidInput(`用法: nx-rp skill <子命令>
-可用: nx-rp skill install [name] [--to <dir>] [--force]
+可用: nx-rp skill install [name]    [--to <dir>] [--force]
+      nx-rp skill install --group=<g> [--to <dir>] [--force]
       nx-rp skill get [name] [ref]  [--to <dir>]
+      nx-rp skill get --group=<g> [ref] [--to <dir>]
+      nx-rp skill groups
 子命令: ${sub || '<空>'}`);
 }
 
@@ -420,13 +578,33 @@ export const BUILTINS = [
   {
     id: 'skill',
     cli: ['skill'],  // 顶层 dispatcher，子命令 install/get 在 rest 里分发
-    summary: 'skill 子命令（目前: install, get）',
+    summary: 'skill 子命令（install / get / groups；--group=<名> 按 group 装）',
     run: cmdSkill,
     render: (r) => {
       if (!r) return '';
+      // groups 子命令：返回数组（每个元素带 group 字段）
+      if (Array.isArray(r) && r.length && r[0] && r[0].group !== undefined) {
+        const w = Math.max(...r.map((g) => g.group.length));
+        return r
+          .map((g) => `${g.group.padEnd(w + 2)}${g.summary || `（${g.skills.join(', ')}）`}${g.source === 'manifest' ? '' : '（未读清单，按目录扫描）'}`)
+          .join('\n');
+      }
       // install 三态（status/installed/skipped/replaced/conflict）走原有四分支渲染。
       // get 包装形态（带 .install 字段）走 prefix → doc → install summary 三段拼接。
       if (!r.install) {
+        // 多 skill 聚合（仅 --group 且展开出多个）：逐行列出。
+        // 判别必须显式——单 skill 的退化结果里也可能带 skills 数组。
+        if (Array.isArray(r.skills)) {
+          const head = `group ${r.group}（${r.skills.length} 个 skill${r.skipped ? '，均为最新' : ''}）`;
+          const body = r.skills.map((s) => {
+            if (s.status === 'ok' && s.skipped) return `  已是最新: ${s.path}（无差异）`;
+            if (s.status === 'ok' && s.installed) return `  已安装: ${s.path}（${s.files} 文件）`;
+            if (s.status === 'ok' && s.replaced) return `  已替换: ${s.path}（${s.files} 文件）`;
+            if (s.status === 'conflict') return `  冲突: ${s.path}（${s.count} 文件不同，加 --force 覆盖）`;
+            return `  ${JSON.stringify(s)}`;
+          });
+          return [head, ...body].join('\n');
+        }
         if (r.status === 'ok' && r.skipped) return `已是最新: ${r.path}（无差异）`;
         if (r.status === 'ok' && r.installed) return `已安装: ${r.path}（${r.files} 文件）`;
         if (r.status === 'ok' && r.replaced) return `已替换: ${r.path}（${r.files} 文件）`;
