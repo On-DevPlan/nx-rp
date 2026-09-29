@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import { CLAUDE_SETTINGS_PATH, SNAPSHOTS_DIR, LOOPS_DIR, loopsFileFor, loopsLogFileFor, cwdDir } from '../../core/paths.js';
 import { appendOwnGroup, removeOwnGroups, toggleSettings, findOwnGroups, ownsGroup, readSettings } from '../../core/claude-settings.js';
 import { readStdin, parseHookEvent, deriveSessionId } from '../../core/hook-io.js';
+import { invalidInput } from '../../core/errors.js';
 
 // 我们那条 hook entry 的指纹——on/off 靠 marker 在 hooks 数组里认亲。
 const HOOK_COMMAND = 'nx-rp loop stop';
@@ -184,6 +185,13 @@ export async function hookStatus({ cwd = cwdDir() } = {}) {
     settingsPath: activeScope === 'shared' ? sharedPath : localPath,
     globalSettingsPath: CLAUDE_SETTINGS_PATH,
     scopeCwd: cwd,
+    // 面板布防表单的默认值：**本 nx-rp 进程**能看到的会话身份。
+    //
+    // 语义边界要说清：这里读的是服务进程的 env，不是浏览器的、也不是「用户此刻
+    // 正在用的那个会话」——serve 若从普通终端启动，这里是 null。所以面板拿到 null
+    // 时不能假装知道，必须提示用户显式填 sessionId（否则布防出来的循环
+    // Stop hook 永远认领不到，表现为「布防了但一直不动」）。
+    currentSessionId: process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || null,
     disableAllHooks,
     corrupt,
     snippet: manualSnippet(),
@@ -265,6 +273,16 @@ export async function startLoop({
   const { file } = loopsFileFor(cwd) || {};
   if (!file) throw new Error('无法确定 loop 状态文件路径（paths 不可用）');
 
+  // 会话身份是硬要求：Stop hook 触发时靠它认领循环，没有身份的循环永远不会被触发
+  // （用户看到的就是「布防了但一直不动」）。宁可在这里明确报错，也不静默建一条死记录。
+  const claudeSessionId = process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || null;
+  if (!sessionId && !claudeSessionId) {
+    throw invalidInput(
+      '拿不到会话身份，无法布防——Stop hook 靠它认领循环，没有身份的循环永远不会被触发。\n' +
+      '解决：显式传 --session-id <ID>（查看当前会话 ID：在 Claude Code 里跑 claude --resume 列表，或读环境变量 CLAUDE_CODE_SESSION_ID）',
+    );
+  }
+
   const state = await readState(file);
   // id 取当前最大值 +1，避免删除后重号
   const nextId = state.loops.reduce((m, l) => Math.max(m, Number(String(l.id).replace(/\D/g, '')) || 0), 0) + 1;
@@ -279,7 +297,7 @@ export async function startLoop({
     prompt,
     // 双保险：payload 的 session_id 最可靠；缺了就用启动时的环境变量兜底
     sessionId: sessionId || null,
-    claudeSessionId: process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || null,
+    claudeSessionId,
     cwd,
     startedAt: now,
     lastFiredAt: null,
@@ -327,6 +345,83 @@ export async function cancelLoop({ id = null, cwd = cwdDir() } = {}) {
   }
   if (n > 0) await writeState(file, state);
   return { status: 'ok', cancelled: n };
+}
+
+// 改一条循环的任务参数。**为「动态规划」而设**：循环跑起来目标会变——
+// 放宽轮次上限让它继续、改 prompt 调方向、换完成短语。
+//
+// 重新激活的语义（关键）：
+//   若之前是**因到上限而停**（endReason === 'max-iterations'），提高上限时自动
+//   复活——这正是「再给它 20 轮」的自然表达。
+//   手工 cancel 过的不复活：那是用户的显式停止意图，要恢复须重新布防。
+//   没改上限的不复活（避免只是改个 prompt 就把已停的循环意外拉起来）。
+export async function updateLoop({ id, prompt, maxIterations, completionPromise, sessionId, cwd = cwdDir() } = {}) {
+  const { file } = loopsFileFor(cwd) || {};
+  if (!file) throw invalidInput('无法确定 loop 状态文件路径（paths 不可用）');
+  if (!id) throw invalidInput('缺少 id——要改哪一条循环');
+
+  const state = await readState(file);
+  const loop = state.loops.find((l) => l.id === id);
+  if (!loop) {
+    const ids = state.loops.map((l) => l.id);
+    throw invalidInput(`未找到循环: ${id}${ids.length ? `（当前目录有: ${ids.join(', ')}）` : ''}`);
+  }
+
+  const changed = [];
+  // 改绑会话：布防时绑错了（比如绑到了运行 nx-rp 的那个进程的会话）时的补救。
+  // 传空串 = 清掉显式绑定，退回只用 claudeSessionId。
+  if (sessionId !== undefined) {
+    const next = sessionId ? String(sessionId) : null;
+    if (next !== loop.sessionId) { loop.sessionId = next; changed.push('sessionId'); }
+  }
+  if (typeof prompt === 'string' && prompt.trim() && prompt !== loop.prompt) {
+    loop.prompt = prompt;
+    changed.push('prompt');
+  }
+  if (completionPromise !== undefined) {
+    // 显式传空串/ null = 清掉承诺词
+    const next = completionPromise ? String(completionPromise) : null;
+    if (next !== loop.completionPromise) { loop.completionPromise = next; changed.push('completionPromise'); }
+  }
+  let reactivated = false;
+  if (maxIterations !== undefined && maxIterations !== null) {
+    const n = Math.floor(Number(maxIterations));
+    if (!Number.isFinite(n)) throw invalidInput(`maxIterations 必须是数字，收到 ${JSON.stringify(maxIterations)}`);
+    const next = Math.max(0, n);
+    if (next !== loop.maxIterations) {
+      loop.maxIterations = next;
+      changed.push('maxIterations');
+      // 到上限停下的：提高上限即复活（0 = 无限也算提高）
+      const raised = next === 0 || next > Number(loop.iteration);
+      if (loop.active === false && loop.endReason === 'max-iterations' && raised) {
+        loop.active = true;
+        delete loop.endReason;
+        delete loop.endedAt;
+        reactivated = true;
+      }
+    }
+  }
+  if (!changed.length) return { status: 'ok', skipped: true, id, loop };
+  await writeState(file, state);
+  return { status: 'ok', id, changed, reactivated, loop };
+}
+
+// 真删记录（区别于 cancel 的「标记结束、记录留着」）。
+// 面板上 cancel 之后记录会越堆越长，需要一个能清掉的出口。
+// 默认只允许删**已结束**的：删活跃循环属于误操作，要求先 cancel
+// （force: true 可越权，留给 CLI 的显式场景）。
+export async function removeLoop({ id, force = false, cwd = cwdDir() } = {}) {
+  const { file } = loopsFileFor(cwd) || {};
+  if (!file) return { status: 'ok', removed: 0 };
+  const state = await readState(file);
+  const target = state.loops.find((l) => l.id === id);
+  if (!target) throw invalidInput(`未找到循环: ${id}`);
+  if (target.active !== false && !force) {
+    throw invalidInput(`循环 ${id} 还在运行——先「取消」再删除（或 CLI 加 --force）`);
+  }
+  state.loops = state.loops.filter((l) => l.id !== id);
+  await writeState(file, state);
+  return { status: 'ok', removed: 1, id };
 }
 
 // ─── Stop hook：transcript 解析 ─────────────────────────────────────
@@ -436,19 +531,17 @@ function salvageTranscriptPath(raw) {
 // 为什么不能「payload 不中就再用 env 兜一次」：Stop hook 进程的 env 与 payload
 // 指的是同一个会话，那次兜底要么冗余、要么在 env 与 payload 不一致时把
 // **别的会话的 loop** 认领过来——多实例隔离（本模块相对 ralph 的核心增量）就此失效。
+//
+// 刻意**没有**「无名候选收养」回退：startLoop 已拒绝创建无身份的循环（见那里），
+// 所以正常情况下不存在无名 loop。留一条收养路径只会给「身份匹配失败」提供一个
+// 静默兜底，掩盖真正的会话归属 bug（早期版本就有，已删）。
+// 旧版本遗留的无名记录一律不匹配 → 放行，面板上标「无会话（旧数据）」。
 export function pickLoop(loops, payloadSessionId, envSessionId) {
   const actives = (loops || []).filter((l) => l && l.active !== false);
   if (!actives.length) return null;
   const sid = payloadSessionId || envSessionId || null;
-  if (sid) {
-    const hit = actives.find((l) => l.sessionId === sid || l.claudeSessionId === sid);
-    if (hit) return hit;
-  }
-  // 收养：`loop start` 时既没给 --session-id 又拿不到 env，这条 loop 就完全
-  // 没有身份标识。唯一一条无名候选取为本次事件所属——否则它永远等不到判定。
-  // 多条无名候选则歧义 → 放行（宁可循环不动，也不能把 A 的 prompt 灌进 B）。
-  const unidentified = actives.filter((l) => !l.sessionId && !l.claudeSessionId);
-  return unidentified.length === 1 ? unidentified[0] : null;
+  if (!sid) return null;
+  return actives.find((l) => l.sessionId === sid || l.claudeSessionId === sid) || null;
 }
 
 // 写审计日志（失败静默——审计不该影响判决）

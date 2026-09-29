@@ -6,7 +6,7 @@
 // 与另两个 hook 模块的**本质差异**：开关写的是**项目级**配置
 // （.claude/settings.local.json），不是全局 ~/.claude/settings.json——
 // 只有配了 hook 的项目才会被拦截退出，语义与 ralph-loop 一致。
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { api } from '../../web/frontend/api/client.js';
 import { useDialog, useGuard, useToast, Copyable } from '../../web/frontend/components/ui.jsx';
 import { CliHints } from '../../web/frontend/components/CliHints.jsx';
@@ -58,6 +58,12 @@ export default function LoopView() {
   const [prompt, setPrompt] = useState('');
   const [maxIter, setMaxIter] = useState('20');
   const [promise, setPromise] = useState('COMPLETE');
+  // 会话绑定：默认留空 = 用服务端捕获的当前会话（status.currentSessionId）。
+  // 之所以要能显式填：布防时拿不到身份的话，Stop hook 永远认领不到这条循环。
+  const [sessInput, setSessInput] = useState('');
+  // 编辑态：editing = {id}；draft 是那一条的可编辑副本（点「保存」才提交）
+  const [editing, setEditing] = useState(null);
+  const [draft, setDraft] = useState({ prompt: '', maxIterations: '20', completionPromise: '', sessionId: '' });
   const guard = useGuard();
   const toast = useToast();
   const { dialog, node: dialogNode } = useDialog();
@@ -109,10 +115,13 @@ export default function LoopView() {
           prompt,
           maxIterations: Number.isFinite(max) ? max : 20,
           completionPromise: promise.trim() || undefined,
+          // 留空则交给服务端用 env 捕获的会话；填了就用填的（显式优先）
+          sessionId: sessInput.trim() || undefined,
         },
       });
       toast(`已布防 ${r.id}`);
       setPrompt('');
+      setSessInput('');
       await refresh();
     });
 
@@ -127,6 +136,54 @@ export default function LoopView() {
       if (!ok) return;
       const r = await api('/api/loop/cancel', { method: 'POST', body: id ? { id } : {} });
       toast(r.cancelled > 0 ? `已取消 ${r.cancelled} 个` : '没有活跃的循环');
+      await refresh();
+    });
+
+  // 删除记录（区别于「取消」：取消只标记结束，记录留着，列表会越堆越长）
+  const remove = (id) =>
+    guard(async () => {
+      const ok = await dialog({
+        title: `删除循环 ${id}？`,
+        message: '从状态文件里真删掉这条记录（取消只是标记结束、记录仍在）。审计日志不受影响。',
+        danger: true,
+        okText: '删除',
+      });
+      if (!ok) return;
+      await api('/api/loop/remove', { method: 'POST', body: { id } });
+      toast(`已删除 ${id}`);
+      if (editing?.id === id) setEditing(null);
+      await refresh();
+    });
+
+  // 进入/退出编辑态。复制一份到 draft 上，改完点「保存」才提交——
+  // 避免边输边写盘，也便于「放弃」。
+  const beginEdit = (l) => {
+    setEditing({ id: l.id });
+    setDraft({
+      prompt: l.prompt || '',
+      maxIterations: String(l.maxIterations ?? 20),
+      completionPromise: l.completionPromise || '',
+      sessionId: l.sessionId || l.claudeSessionId || '',
+    });
+  };
+
+  const saveEdit = () =>
+    guard(async () => {
+      if (!editing) return;
+      const max = Number(draft.maxIterations);
+      const r = await api('/api/loop/update', {
+        method: 'POST',
+        body: {
+          id: editing.id,
+          prompt: draft.prompt,
+          maxIterations: Number.isFinite(max) ? max : undefined,
+          completionPromise: draft.completionPromise.trim(),
+          sessionId: draft.sessionId.trim(),
+        },
+      });
+      toast(r.skipped ? '没有改动'
+        : `已更新 ${r.changed.join(' / ')}${r.reactivated ? '（已重新激活）' : ''}`);
+      setEditing(null);
       await refresh();
     });
 
@@ -239,12 +296,27 @@ export default function LoopView() {
               <input className="dlg-input" style={{ width: 140, marginLeft: 6, height: 'auto' }}
                 value={promise} onChange={(e) => setPromise(e.target.value)} placeholder="COMPLETE" />
             </label>
+            <label className="muted" style={{ fontSize: 12, marginLeft: 12 }}>
+              会话
+              <input className="dlg-input" style={{ width: 200, marginLeft: 6, height: 'auto' }}
+                value={sessInput} onChange={(e) => setSessInput(e.target.value)}
+                placeholder={status?.currentSessionId ? `默认 ${String(status.currentSessionId).slice(0, 8)}…` : '（拿不到，请填）'} />
+            </label>
             <button className="btn small" style={{ marginLeft: 'auto' }} onClick={start} disabled={!status?.enabled}>
               布防
             </button>
             {!status?.enabled ? <span className="muted" style={{ fontSize: 11 }}>先启用 hook</span> : null}
           </div>
+          {/* 会话绑定提示：这是最容易踩的坑——留空时绑定的是「运行 nx-rp 那个进程的会话」，
+              不是浏览器所在会话。布防前让用户看清会绑到谁。 */}
           <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+            {sessInput.trim()
+              ? <>将绑定到 <Copyable text={sessInput.trim()} className="tag mono" title="点击复制">{String(sessInput.trim()).slice(0, 8)}</Copyable>（显式指定）</>
+              : status?.currentSessionId
+                ? <>将绑定到当前会话 <Copyable text={status.currentSessionId} className="tag mono" title={`${status.currentSessionId}\n点击复制`}>{String(status.currentSessionId).slice(0, 8)}</Copyable>（服务端 env 捕获）</>
+                : <span className="bad">拿不到会话身份——留空布防会失败，请在上面的「会话」里显式填写 sessionId。</span>}
+          </p>
+          <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
             完成判定：模型输出 <code>&lt;promise&gt;{promise || '完成短语'}&lt;/promise&gt;</code> 且与上面一字不差时结束。
             每次迭代轮次 +1，到上限自动停止。
           </p>
@@ -268,7 +340,8 @@ export default function LoopView() {
             const max = l.maxIterations > 0 ? l.maxIterations : 0;
             const pct = max > 0 ? Math.min(100, Math.round((l.iteration / max) * 100)) : 0;
             return (
-              <div key={l.id} className="row wrap">
+              <Fragment key={l.id}>
+              <div className="row wrap">
                 <div style={{ width: 18, flexShrink: 0, fontSize: 13 }} title={l.active === false ? '已结束' : '活跃'}>
                   {l.active === false ? '○' : '●'}
                 </div>
@@ -297,15 +370,65 @@ export default function LoopView() {
                 </div>
                 <div className="acts">
                   <span className="muted" style={{ fontSize: 11 }}>最近 {fmt(l.lastFiredAt || l.startedAt)}</span>
+                  <button className="btn small ghost"
+                    onClick={() => (editing?.id === l.id ? setEditing(null) : beginEdit(l))}>
+                    {editing?.id === l.id ? '收起' : '编辑'}
+                  </button>
                   {l.active !== false ? (
                     <button className="btn small ghost" onClick={() => cancel(l.id)}>取消</button>
-                  ) : null}
+                  ) : (
+                    <button className="btn small ghost" onClick={() => remove(l.id)}>删除</button>
+                  )}
                 </div>
               </div>
+              {/* 编辑表单：多字段，用展开卡片而非 useDialog（它只支持单输入框）。
+                  改完点「保存」才提交，便于中途「放弃」。 */}
+              {editing?.id === l.id ? (
+                <div style={{ padding: '8px 12px 12px 30px', background: 'var(--soft)', borderBottom: '1px solid var(--soft-2)' }}>
+                  <textarea
+                    value={draft.prompt}
+                    onChange={(e) => setDraft((d) => ({ ...d, prompt: e.target.value }))}
+                    spellCheck={false}
+                    placeholder="任务描述"
+                    style={{
+                      width: '100%', height: 70, padding: 8, fontFamily: 'ui-monospace, Consolas, monospace',
+                      fontSize: 12, border: '1px solid var(--soft-2)', borderRadius: 4, background: 'var(--paper)', resize: 'vertical',
+                    }}
+                  />
+                  <div className="toolbar" style={{ marginTop: 6, flexWrap: 'wrap' }}>
+                    <label className="muted" style={{ fontSize: 12 }}>
+                      轮次上限
+                      <input className="dlg-input" style={{ width: 70, marginLeft: 6, height: 'auto' }}
+                        value={draft.maxIterations}
+                        onChange={(e) => setDraft((d) => ({ ...d, maxIterations: e.target.value }))} />
+                    </label>
+                    <label className="muted" style={{ fontSize: 12, marginLeft: 10 }}>
+                      完成短语
+                      <input className="dlg-input" style={{ width: 130, marginLeft: 6, height: 'auto' }}
+                        value={draft.completionPromise}
+                        onChange={(e) => setDraft((d) => ({ ...d, completionPromise: e.target.value }))} />
+                    </label>
+                    <label className="muted" style={{ fontSize: 12, marginLeft: 10 }}>
+                      会话
+                      <input className="dlg-input" style={{ width: 180, marginLeft: 6, height: 'auto' }}
+                        value={draft.sessionId}
+                        onChange={(e) => setDraft((d) => ({ ...d, sessionId: e.target.value }))} />
+                    </label>
+                    <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6 }}>
+                      <button className="btn small ghost" onClick={() => setEditing(null)}>放弃</button>
+                      <button className="btn small" onClick={saveEdit}>保存</button>
+                    </span>
+                  </div>
+                  <p className="muted" style={{ marginTop: 6, fontSize: 11 }}>
+                    提高轮次上限可复活「因到上限而停」的循环（手工取消的不复活）。
+                    下一轮起灌回改后的任务描述。
+                  </p>
+                </div>
+              ) : null}
+              </Fragment>
             );
           })}
       </div>
-
       {/* ── 审计日志 ── */}
       <div className="card">
         <div className="colhead">

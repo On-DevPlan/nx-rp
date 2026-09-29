@@ -203,26 +203,61 @@ test('pickLoop：payload 有 session 时不走 env 兜底（守住多实例隔�
   assert.equal(pickLoop(loops, null, 'ENV1')?.id, 'a', 'payload 缺失时才轮到 env');
 });
 
-test('Stop hook：唯一且无会话标识的 loop 被本会话收养（--session-id 没给时的自愈）', async () => {
-  const { startLoop, stopHookRaw, listLoops } = await import(serviceUrl());
+test('startLoop：拿不到任何会话身份 → 抛 INVALID_INPUT（匿名循环不该存在）', async () => {
+  const { startLoop } = await import(serviceUrl());
   const saved = process.env.CLAUDE_CODE_SESSION_ID;
   const savedAlt = process.env.CLAUDE_SESSION_ID;
   delete process.env.CLAUDE_CODE_SESSION_ID;
   delete process.env.CLAUDE_SESSION_ID;
   try {
     const cwd = join(tmp, 'proj');
-    await startLoop({ prompt: '任务', completionPromise: 'DONE', maxIterations: 5, cwd }); // 无 sessionId，也无 env
-    const [before] = await listLoops({ cwd });
-    assert.equal(before.sessionId, null, '前提：该 loop 完全没有会话标识');
-    const p = await writeTranscript('adopt.jsonl', [assistantLine('做完了 <promise>DONE</promise>')]);
-    const out = await stopHookRaw(stopEvent({ cwd, transcriptPath: p, sessionId: 'S1' }));
-    assert.ok(out && out.systemMessage.includes('完成'), '匿名的唯一 loop 应被收养并正常判定: ' + JSON.stringify(out));
-    const [after] = await listLoops({ cwd });
-    assert.equal(after.sessionId, 'S1', '收养后回填 sessionId');
+    await assert.rejects(
+      () => startLoop({ prompt: '任务', completionPromise: 'DONE', maxIterations: 5, cwd }),
+      (e) => {
+        assert.equal(e.code, 'INVALID_INPUT');
+        assert.match(e.message, /拿不到会话身份/);
+        assert.match(e.message, /--session-id/, '错误信息要给出解法');
+        return true;
+      },
+    );
+    // 显式 --session-id 时不受 env 缺失影响
+    const r = await startLoop({ prompt: '任务', sessionId: 'EXPLICIT-1', cwd });
+    assert.equal(r.loop.sessionId, 'EXPLICIT-1');
   } finally {
     if (saved !== undefined) process.env.CLAUDE_CODE_SESSION_ID = saved;
     if (savedAlt !== undefined) process.env.CLAUDE_SESSION_ID = savedAlt;
   }
+});
+
+test('Stop hook：旧版遗留的无名 loop 不被认领（收养回退已删，不再有静默兜底）', async () => {
+  const { stopHookRaw, listLoops } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  // 直接手写一条「旧版本才会产生」的无名记录：两个会话字段都为空
+  const { file } = pathsMod.loopsFileFor(cwd);
+  await mkdir(join(file, '..'), { recursive: true });
+  await writeFile(file, JSON.stringify({
+    version: 1,
+    loops: [{
+      id: 'loop-old', active: true, iteration: 1, maxIterations: 5,
+      completionPromise: 'DONE', prompt: '旧数据', sessionId: null, claudeSessionId: null,
+      cwd, startedAt: new Date().toISOString(), lastFiredAt: null,
+    }],
+  }, null, 2), 'utf8');
+
+  const p = await writeTranscript('named.jsonl', [assistantLine('做完了 <promise>DONE</promise>')]);
+  // 旧版这里会把这条无名记录「收养」给当前会话并判完成；现在必须放行、不碰它
+  const out = await stopHookRaw(stopEvent({ cwd, transcriptPath: p, sessionId: 'S1' }));
+  assert.equal(out, null, '无名旧记录不该被认领（否则会掩盖真正的会话归属 bug）');
+  const [l] = await listLoops({ cwd });
+  assert.equal(l.sessionId, null, '不该被回填 sessionId');
+  assert.equal(l.active, true, '不该被改动');
+});
+
+test('pickLoop：无 sid 时返回 null（不再靠唯一候选兜底）', async () => {
+  const { pickLoop } = await import(serviceUrl());
+  assert.equal(pickLoop([{ id: 'a', active: true }], null, null), null, '两个 sid 都空 → 放行');
+  assert.equal(pickLoop([{ id: 'a', active: true }], 'S1', null), null, '无名 loop 不被 sid=S1 认领');
+  assert.equal(pickLoop([{ id: 'a', active: true, sessionId: 'S1' }], 'S1', null)?.id, 'a');
 });
 
 // ─── Stop hook 六分支 ──────────────────────────────────────────────
@@ -528,4 +563,104 @@ test('listLoopLog：记录每轮判定，含解析到的文本长度', async () 
   assert.equal(logs[0].decision, 'continue');
   assert.equal(logs[0].lastTextChars, 3, '记下解析到的字数——面板上一眼看出解析是否失效');
   assert.equal(logs[0].iteration, 2);
+});
+
+// ============================================================
+// updateLoop / removeLoop（面板「编辑任务」与「删除」的后端）
+// ============================================================
+
+test('updateLoop：改 prompt / 上限 / 承诺，各字段独立', async () => {
+  const { startLoop, updateLoop } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  const { id } = await startLoop({ prompt: '原任务', sessionId: 'S1', maxIterations: 5, completionPromise: 'A', cwd });
+
+  const r1 = await updateLoop({ id, prompt: '新任务', cwd });
+  assert.deepEqual(r1.changed, ['prompt']);
+  assert.equal(r1.loop.prompt, '新任务');
+  assert.equal(r1.loop.maxIterations, 5, '没传的字段不动');
+
+  const r2 = await updateLoop({ id, maxIterations: 20, completionPromise: 'B', cwd });
+  assert.deepEqual(r2.changed.sort(), ['completionPromise', 'maxIterations']);
+  assert.equal(r2.loop.maxIterations, 20);
+  assert.equal(r2.loop.completionPromise, 'B');
+
+  // 传空串 = 清掉承诺（与 undefined「不改」语义不同）
+  const r3 = await updateLoop({ id, completionPromise: '', cwd });
+  assert.equal(r3.loop.completionPromise, null);
+
+  // 无改动 → skipped
+  const r4 = await updateLoop({ id, cwd });
+  assert.equal(r4.skipped, true);
+});
+
+test('updateLoop：因到上限而停的循环，提高上限时自动复活', async () => {
+  const { startLoop, updateLoop, stopHookRaw, listLoops } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', sessionId: 'S1', maxIterations: 1, completionPromise: 'DONE', cwd });
+  const p = await writeTranscript('up1.jsonl', [assistantLine('还没完')]);
+  // 打到上限 → active=false, endReason=max-iterations
+  await stopHookRaw(stopEvent({ cwd, transcriptPath: p, sessionId: 'S1' }));
+  let [l] = await listLoops({ cwd });
+  assert.equal(l.active, false);
+  assert.equal(l.endReason, 'max-iterations');
+
+  const r = await updateLoop({ id: l.id, maxIterations: 10, cwd });
+  assert.equal(r.reactivated, true, '提高上限应复活');
+  assert.equal(r.loop.active, true);
+  assert.equal(r.loop.endReason, undefined);
+  [l] = await listLoops({ cwd });
+  assert.equal(l.active, true);
+});
+
+test('updateLoop：手工取消的循环不因改上限而复活', async () => {
+  const { startLoop, cancelLoop, updateLoop, listLoops } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  const { id } = await startLoop({ prompt: '任务', sessionId: 'S1', maxIterations: 5, cwd });
+  await cancelLoop({ id, cwd });
+  const r = await updateLoop({ id, maxIterations: 50, cwd });
+  assert.equal(r.reactivated, false, '显式 cancel 是用户意图，不该被自动拉起');
+  const [l] = await listLoops({ cwd });
+  assert.equal(l.active, false);
+});
+
+test('updateLoop：找不到 id / 缺 id → INVALID_INPUT，错误信息带可用列表', async () => {
+  const { startLoop, updateLoop } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', sessionId: 'S1', cwd });
+  await assert.rejects(() => updateLoop({ id: 'loop-99', cwd }), /未找到循环: loop-99.*可用|当前目录有/);
+  await assert.rejects(() => updateLoop({ cwd }), /缺少 id/);
+});
+
+test('removeLoop：只能删已结束的；活跃的需 force', async () => {
+  const { startLoop, removeLoop, listLoops, cancelLoop } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  const { id } = await startLoop({ prompt: '任务', sessionId: 'S1', cwd });
+
+  await assert.rejects(() => removeLoop({ id, cwd }), /还在运行/);
+  const r = await cancelLoop({ id, cwd });
+  assert.equal(r.cancelled, 1);
+  const rm = await removeLoop({ id, cwd });
+  assert.equal(rm.removed, 1);
+  assert.deepEqual(await listLoops({ cwd }), [], '记录真被删掉');
+
+  await assert.rejects(() => removeLoop({ id: 'nope', cwd }), /未找到循环/);
+
+  // force 可删活跃的
+  const { id: id2 } = await startLoop({ prompt: '任务2', sessionId: 'S1', cwd });
+  assert.equal((await removeLoop({ id: id2, force: true, cwd })).removed, 1);
+});
+
+test('updateLoop：可改绑会话（布防时绑错会话的补救）', async () => {
+  const { startLoop, updateLoop } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  const { id } = await startLoop({ prompt: '任务', sessionId: 'WRONG', cwd });
+  const r = await updateLoop({ id, sessionId: 'RIGHT', cwd });
+  assert.ok(r.changed.includes('sessionId'));
+  assert.equal(r.loop.sessionId, 'RIGHT');
+  // 传空串 = 清掉显式绑定，退回只用 claudeSessionId
+  const r2 = await updateLoop({ id, sessionId: '', cwd });
+  assert.equal(r2.loop.sessionId, null);
+  // 不传该字段 = 不动
+  const r3 = await updateLoop({ id, prompt: '改个名', cwd });
+  assert.ok(!r3.changed.includes('sessionId'));
 });

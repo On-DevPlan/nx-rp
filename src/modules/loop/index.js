@@ -29,6 +29,21 @@ function sessionLabel(loop) {
   return sid + (loop.sessionId ? '' : '（env 捕获）');
 }
 
+// 布防后的会话提示：这里最容易踩坑——loop 绑定的是**启动它的那个进程**的会话，
+// 不是「你现在正在看的会话」。说清楚，并给出改绑的命令。
+function sessionHint(loop) {
+  const bound = loop?.sessionId || loop?.claudeSessionId;
+  const lines = [`会话: ${sessionLabel(loop)}`];
+  if (!bound) {
+    lines.push('  ⚠️ 这条循环没有任何会话身份，Stop hook 认领不到它（不会触发）。');
+    lines.push(`     改绑：nx-rp loop update --id ${loop.id} --session-id <你的会话ID>`);
+  } else if (loop.sessionId === null && loop.claudeSessionId) {
+    lines.push('  绑定来源：启动时从 CLAUDE_CODE_SESSION_ID 捕获（不是显式 --session-id）。');
+    lines.push('  若它不是你想要的会话，改绑：nx-rp loop update --id ' + loop.id + ' --session-id <会话ID>');
+  }
+  return lines.join('\n');
+}
+
 export default {
   id: 'loop',
   title: '循环',
@@ -78,7 +93,7 @@ export default {
         return `🔄 循环已布防: ${l.id}\n` +
           `轮次上限: ${max}\n` +
           `完成短语: ${promise}\n` +
-          `会话: ${sessionLabel(l)}\n` +
+          `${sessionHint(l)}\n` +
           `状态: ${r.file}\n\n` +
           `Stop hook 会在你每次想结束回合时，把同一条 prompt 原样灌回来。\n` +
           `先跑 nx-rp loop on 确保 hook 已启用。`;
@@ -153,6 +168,46 @@ export default {
       flags: { id: { type: 'string', hint: '循环 id（如 loop-1）；缺省取消全部' } },
       run: (ctx) => service.cancelLoop({ id: ctx.id || null }),
       render: (r) => (r.cancelled > 0 ? `已取消 ${r.cancelled} 个循环` : '没有活跃的循环'),
+    },
+    {
+      id: 'loop.update',
+      cli: ['loop', 'update'],
+      http: ['POST', '/api/loop/update'],
+      summary: '改一条循环的任务参数（prompt / 轮次上限 / 完成承诺 / 会话）；因到上限而停的会随上限提高自动复活',
+      flags: {
+        id: { type: 'string', required: true, hint: '循环 id（如 loop-1）' },
+        prompt: { type: 'string', hint: '新的任务描述（缺省不改）' },
+        maxIterations: { type: 'number', hint: '新的轮次上限（0 = 无限；提高可复活已到上限的循环）' },
+        completionPromise: { type: 'string', hint: '新的完成短语（传空串 = 清掉承诺）' },
+        sessionId: { type: 'string', hint: '改绑会话（传空串 = 清掉显式绑定）' },
+      },
+      run: (ctx) => service.updateLoop({
+        id: ctx.id,
+        prompt: ctx.prompt,
+        maxIterations: ctx.maxIterations,
+        // 没传这个 flag 时保持原值；传了空串则清掉（undefined 与 '' 语义不同）
+        completionPromise: ctx.completionPromise,
+        sessionId: ctx.sessionId,
+      }),
+      render: (r) => {
+        if (r.skipped) return `无改动: ${r.id}`;
+        const l = r.loop;
+        const max = l.maxIterations > 0 ? l.maxIterations : '∞';
+        return `已更新 ${r.id}: ${r.changed.join(' / ')}${r.reactivated ? '（已重新激活）' : ''}\n` +
+          `  轮次: ${l.iteration}/${max} · 承诺: ${l.completionPromise ? `<promise>${l.completionPromise}</promise>` : '（无）'}`;
+      },
+    },
+    {
+      id: 'loop.remove',
+      cli: ['loop', 'remove'],
+      http: ['POST', '/api/loop/remove'],
+      summary: '删除一条循环记录（默认只允许删已结束的；--force 可删活跃的）',
+      flags: {
+        id: { type: 'string', required: true, hint: '循环 id' },
+        force: { type: 'boolean', hint: '允许删除仍在运行的循环' },
+      },
+      run: (ctx) => service.removeLoop({ id: ctx.id, force: !!ctx.force }),
+      render: (r) => (r.removed ? `已删除 ${r.id}` : '没有可删除的循环'),
     },
     {
       id: 'loop.log',
