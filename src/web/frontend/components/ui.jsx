@@ -32,7 +32,7 @@ export function useGuard() {
 }
 
 // ---- 点击即复制 ----
-export function Copyable({ text, className = '', title, children }) {
+export function Copyable({ text, className = '', title, children, style }) {
   const toast = useToast();
   const copy = async () => {
     const v = String(text ?? '');
@@ -44,7 +44,7 @@ export function Copyable({ text, className = '', title, children }) {
     }
   };
   return (
-    <span className={'copyable' + (className ? ' ' + className : '')} title={title || '点击复制'} onClick={copy}>
+    <span className={'copyable' + (className ? ' ' + className : '')} title={title || '点击复制'} onClick={copy} style={style}>
       {children !== undefined ? children : text}
     </span>
   );

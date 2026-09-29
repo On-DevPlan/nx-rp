@@ -8,7 +8,7 @@
 // 只有配了 hook 的项目才会被拦截退出，语义与 ralph-loop 一致。
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../../web/frontend/api/client.js';
-import { useDialog, useGuard, useToast } from '../../web/frontend/components/ui.jsx';
+import { useDialog, useGuard, useToast, Copyable } from '../../web/frontend/components/ui.jsx';
 import { CliHints } from '../../web/frontend/components/CliHints.jsx';
 import { useStore } from '../../web/frontend/store.jsx';
 import ManualAddCard from '../../web/frontend/components/ManualAddCard.jsx';
@@ -22,6 +22,31 @@ const END_REASON = { promise: '已完成', 'max-iterations': '到上限', cancel
 function fmt(ts) {
   return String(ts || '').replace('T', ' ').slice(0, 19);
 }
+
+// 一条循环的会话归属标签。
+//
+// 两个字段都是「这个会话」的等价标识，取先有值的那个：
+//   sessionId       —— 用户显式 --session-id 传的
+//   claudeSessionId —— 启动时从 CLAUDE_CODE_SESSION_ID 捕获的
+// 只认 sessionId 会把「靠 env 绑定好」的循环误显示成匿名（这是个已修的显示 bug）。
+function SessionTag({ loop }) {
+  const sid = loop.sessionId || loop.claudeSessionId;
+  if (!sid) {    // 走到这里说明这条循环真的没有任何身份——服务端已不再允许新建这种循环，
+    // 只可能是旧版本遗留的记录。
+    return <span className="tag bad" style={{ fontSize: 11 }} title="没有任何会话标识：Stop hook 无法确定它归谁，不会被触发">无会话（旧数据）</span>;
+  }
+  const via = loop.sessionId ? '' : '（env 捕获）';
+  return (
+    <Copyable
+      text={sid}
+      className="tag mono"
+      title={`sessionId: ${sid}${via}\n点击复制完整 ID，用于 claude --resume`}
+    >
+      {String(sid).slice(0, 8)}{loop.sessionId ? '' : ' *'}
+    </Copyable>
+  );
+}
+
 
 export default function LoopView() {
   const { boot } = useStore();
@@ -243,18 +268,23 @@ export default function LoopView() {
             const max = l.maxIterations > 0 ? l.maxIterations : 0;
             const pct = max > 0 ? Math.min(100, Math.round((l.iteration / max) * 100)) : 0;
             return (
-              <div key={l.id} className="row" style={{ alignItems: 'flex-start' }}>
+              <div key={l.id} className="row wrap">
                 <div style={{ width: 18, flexShrink: 0, fontSize: 13 }} title={l.active === false ? '已结束' : '活跃'}>
                   {l.active === false ? '○' : '●'}
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span className="mono" style={{ fontSize: 12 }}>{l.id}</span>
                     <span className="muted" style={{ fontSize: 12 }}>
                       {l.iteration}/{max || '∞'}
                       {l.completionPromise ? ` · <promise>${l.completionPromise}</promise>` : ' · 无承诺'}
                     </span>
                     {l.endReason ? <span className="tag" style={{ fontSize: 11 }}>{END_REASON[l.endReason] || l.endReason}</span> : null}
+                    {/* 会话归属：多会话并行时靠这个区分这条循环归谁。
+                        两个字段都是「本会话」的等价标识——sessionId 是显式传的，
+                        claudeSessionId 是启动时从 CLAUDE_CODE_SESSION_ID 捕获的。
+                        同时显示短码 + 可点击复制，与 hook-prompt 面板一致。 */}
+                    <SessionTag loop={l} />
                   </div>
                   <div className="muted" style={{ fontSize: 12, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {String(l.prompt).replace(/\s+/g, ' ')}
@@ -285,17 +315,24 @@ export default function LoopView() {
         {!logs ? <div className="empty">{loadError ? '无法加载' : '加载中…'}</div>
           : logs.length === 0 ? <div className="empty">（暂无记录——跑起一个循环后再来）</div>
           : logs.map((r, i) => (
-            <div key={i} className="row">
-              <div className="mono" style={{ width: 140, flexShrink: 0, fontSize: 12 }}>{fmt(r.ts)}</div>
-              <div className="mono" style={{ width: 70, flexShrink: 0, fontSize: 12 }}>{r.loopId || '—'}</div>
-              <div style={{ width: 70, flexShrink: 0, fontSize: 12 }}>第 {r.iteration} 轮</div>
-              <div style={{ width: 80, flexShrink: 0 }}>
+            <div key={i} className="row wrap" style={{ gap: 8 }}>
+              <div className="mono" style={{ flexShrink: 0, fontSize: 12 }}>{fmt(r.ts)}</div>
+              <div className="mono" style={{ flexShrink: 0, fontSize: 12 }}>{r.loopId || '—'}</div>
+              <div style={{ flexShrink: 0, fontSize: 12 }}>第 {r.iteration} 轮</div>
+              <div style={{ flexShrink: 0 }}>
                 <span className={'tag' + (r.decision === 'promise-hit' ? ' strong' : (r.decision === 'continue' ? '' : ' bad'))}
                   style={{ fontSize: 11 }}>
                   {DECISION[r.decision] || r.decision}
                 </span>
               </div>
-              <div className="muted" style={{ flex: 1, minWidth: 0, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              {/* 会话归属：审计行也带 sessionId，便于对照是哪条循环哪个会话产生的 */}
+              {r.sessionId ? (
+                <Copyable text={r.sessionId} className="tag mono" style={{ flexShrink: 0, fontSize: 11 }}
+                  title={`sessionId: ${r.sessionId}\n点击复制完整 ID`}>
+                  {String(r.sessionId).slice(0, 8)}
+                </Copyable>
+              ) : null}
+              <div className="muted" style={{ flex: 1, minWidth: 120, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                 title={r.lastText || ''}>
                 {r.decision === 'continue'
                   ? `promise=${r.promise ?? '—'} · 解析到 ${r.lastTextChars ?? '?'} 字`

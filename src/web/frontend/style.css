@@ -53,6 +53,9 @@ main { padding: 16px; }
 .row .name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .desc { color: var(--mid); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .acts { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+/* 多行行（如 loop 列表：元信息 + prompt + 进度条）：解除固定行高。
+   .row 的 --row-h 是给单行列表用的；内容超过一行时不解除就会溢出重叠。 */
+.row.wrap { height: auto; min-height: var(--row-h); padding: 8px 12px; align-items: flex-start; }
 .btn, .tab { height: var(--btn-h); font-size: var(--fs-core); }
 
 .btn { font: inherit; cursor: pointer; padding: 0 12px; border: 0; border-radius: var(--radius-btn); background: var(--ink); color: var(--paper); box-shadow: var(--shadow-relief); display: inline-flex; align-items: center; gap: 4px; transition: box-shadow 0.12s, transform 0.08s, background 0.12s; }

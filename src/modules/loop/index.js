@@ -18,6 +18,17 @@ function normalizeLimit(v) {
   return Math.min(n, 1000);
 }
 
+// 会话归属的**单一判定**：两个字段都是「这个会话」的等价标识，取先有值的那个。
+//   sessionId       —— 用户显式 --session-id 传的
+//   claudeSessionId —— 启动时从 CLAUDE_CODE_SESSION_ID 捕获的
+// 只认 sessionId 会把「靠 env 绑定好」的循环误报成匿名——这条此前在 CLI 与面板
+// 两处渲染里各犯过一次（是新模块的显示 bug，已统一到此函数）。
+function sessionLabel(loop) {
+  const sid = loop?.sessionId || loop?.claudeSessionId;
+  if (!sid) return '（无会话——旧数据遗留，Stop hook 不会触发它）';
+  return sid + (loop.sessionId ? '' : '（env 捕获）');
+}
+
 export default {
   id: 'loop',
   title: '循环',
@@ -67,7 +78,7 @@ export default {
         return `🔄 循环已布防: ${l.id}\n` +
           `轮次上限: ${max}\n` +
           `完成短语: ${promise}\n` +
-          `会话: ${l.sessionId || '（匿名——靠 pickLoop 的 env 兜底匹配）'}\n` +
+          `会话: ${sessionLabel(l)}\n` +
           `状态: ${r.file}\n\n` +
           `Stop hook 会在你每次想结束回合时，把同一条 prompt 原样灌回来。\n` +
           `先跑 nx-rp loop on 确保 hook 已启用。`;
