@@ -678,3 +678,74 @@ test('updateLoop：可改绑会话（布防时绑错会话的补救）', async (
   const r3 = await updateLoop({ id, prompt: '改个名', cwd });
   assert.ok(!r3.changed.includes('sessionId'));
 });
+
+test('prompt 版本：改任务描述归档旧版并升号；审计记当轮版号', async () => {
+  const { startLoop, updateLoop, stopHookRaw, listLoopLog, listLoops } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  const { id } = await startLoop({ prompt: '初版任务', sessionId: 'S1', maxIterations: 5, completionPromise: 'NO', cwd });
+
+  // 首次布防：v1，且**不存历史**（当前版就在 prompt 字段里）
+  let [l] = await listLoops({ cwd });
+  assert.equal(l.promptVersion, 1);
+  assert.deepEqual(l.promptVersions, []);
+
+  // 改一次 → 旧版进历史，当前升为 v2
+  await updateLoop({ id, prompt: '第二版任务', cwd });
+  [l] = await listLoops({ cwd });
+  assert.equal(l.promptVersion, 2);
+  assert.equal(l.prompt, '第二版任务');
+  assert.equal(l.promptVersions.length, 1);
+  assert.equal(l.promptVersions[0].v, 1);
+  assert.equal(l.promptVersions[0].text, '初版任务', '归档的是被替换掉的旧版');
+
+  // 再改一次 → v3，历史两版（旧的在前）
+  await updateLoop({ id, prompt: '第三版任务', cwd });
+  [l] = await listLoops({ cwd });
+  assert.equal(l.promptVersion, 3);
+  assert.deepEqual(l.promptVersions.map((p) => p.v), [1, 2]);
+
+  // 审计记的是**当轮实际用的**版号
+  const p = await writeTranscript('ver.jsonl', [assistantLine('干活中')]);
+  await stopHookRaw(stopEvent({ cwd, transcriptPath: p, sessionId: 'S1' }));
+  const [log] = await listLoopLog({ cwd });
+  assert.equal(log.promptVersion, 3, '第 3 轮用的是 v3');
+});
+
+test('prompt 版本：历史超上限丢最旧；未改过 prompt 时不记历史', async () => {
+  const { startLoop, updateLoop, listLoops } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  const { id } = await startLoop({ prompt: 'v1', sessionId: 'S1', cwd });
+  // 连改 12 次（上限 10）
+  for (let i = 2; i <= 13; i++) await updateLoop({ id, prompt: `v${i}`, cwd });
+  const [l] = await listLoops({ cwd });
+  assert.equal(l.promptVersion, 13);
+  assert.equal(l.promptVersions.length, 10, '超出上限丢最旧');
+  assert.equal(l.promptVersions[0].v, 3, '丢的是最旧的几版');
+  assert.equal(l.promptVersions[9].v, 12);
+
+  // 只改别的字段（不碰 prompt）不动版本
+  await updateLoop({ id, maxIterations: 99, cwd });
+  const [l2] = await listLoops({ cwd });
+  assert.equal(l2.promptVersion, 13, '没改 prompt 就不升号');
+});
+
+test('prompt 版本：老记录（无该字段）按 v1 读，不崩', async () => {
+  const { stopHookRaw, listLoopLog } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  const { file } = pathsMod.loopsFileFor(cwd);
+  await mkdir(join(file, '..'), { recursive: true });
+  // 模拟 v0.9.3 之前写的记录：没有 promptVersion / promptVersions
+  await writeFile(file, JSON.stringify({
+    version: 1,
+    loops: [{
+      id: 'loop-old', active: true, iteration: 1, maxIterations: 5,
+      completionPromise: 'NO', prompt: '老任务', sessionId: 'S1', claudeSessionId: null,
+      cwd, startedAt: new Date().toISOString(), lastFiredAt: null,
+    }],
+  }, null, 2), 'utf8');
+
+  const p = await writeTranscript('oldver.jsonl', [assistantLine('x')]);
+  await stopHookRaw(stopEvent({ cwd, transcriptPath: p, sessionId: 'S1' }));
+  const [log] = await listLoopLog({ cwd });
+  assert.equal(log.promptVersion, 1, '老记录视为 v1');
+});

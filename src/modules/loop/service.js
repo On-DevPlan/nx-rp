@@ -56,6 +56,17 @@ function capBytes(s, maxBytes) {
   return { text: buf.subarray(0, maxBytes).toString('utf8'), truncated: true };
 }
 
+// prompt 版本历史保留上限。
+// loop 支持改任务描述（动态规划），所以要能回答「第 N 轮用的哪版 prompt」。
+// 但 prompt 通常几百字、且改动远没有迭代频繁（10 轮可能改 1 次），留 10 版足够回溯，
+// 又不至于让状态文件无限膨胀。超出丢最旧。
+const PROMPT_HISTORY_KEEP = 10;
+
+// 当前版号。老记录没有该字段 → 视为 1（它们从未被改过）。
+function promptVersionOf(loop) {
+  return Number(loop.promptVersion) || 1;
+}
+
 // ─── hook 配置（项目级） ──────────────────────────────────────────────
 
 function hookEntry() {
@@ -319,6 +330,10 @@ export async function startLoop({
     maxIterations: max,
     completionPromise: completionPromise || null,
     prompt,
+    // 版本管理：当前版号 + 历史数组。首次布防**不存历史**——当前版就在
+    // prompt 字段里，再存一份纯属浪费；只有被 updateLoop 改掉时才归档旧版。
+    promptVersion: 1,
+    promptVersions: [],
     // 双保险：payload 的 session_id 最可靠；缺了就用启动时的环境变量兜底
     sessionId: sessionId || null,
     claudeSessionId,
@@ -399,6 +414,14 @@ export async function updateLoop({ id, prompt, maxIterations, completionPromise,
     if (next !== loop.sessionId) { loop.sessionId = next; changed.push('sessionId'); }
   }
   if (typeof prompt === 'string' && prompt.trim() && prompt !== loop.prompt) {
+    // 改任务描述前先把**旧版**归档，再递增版号——这样审计日志里的 promptVersion
+    // 永远指向「那一轮实际用的那版」，而不是被覆盖后的新版。
+    const prev = promptVersionOf(loop);
+    loop.promptVersions = [
+      ...(Array.isArray(loop.promptVersions) ? loop.promptVersions : []),
+      { v: prev, text: loop.prompt, changedAt: new Date().toISOString() },
+    ].slice(-PROMPT_HISTORY_KEEP);
+    loop.promptVersion = prev + 1;
     loop.prompt = prompt;
     changed.push('prompt');
   }
@@ -636,6 +659,9 @@ async function stopHookInner(raw) {
       // 列表行用的一句话摘要。文本本就没有换行的（单行回复）不重复存一份。
       lastTextHead: text === null ? null
         : (capped.text.includes('\n') ? oneLine(capped.text, 300) : undefined),
+      // 这一轮用的是哪版 prompt。**只记版号不记全文**——每轮复制一份同样的几百字
+      // 会把 append-only 的 JSONL 撑爆；要全文就按这个号去状态文件的 promptVersions 查。
+      promptVersion: promptVersionOf(loop),
     };
 
     // 分支 3：迭代超限

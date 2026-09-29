@@ -465,6 +465,19 @@ export default function LoopView() {
                     <dt>最后触发</dt>
                     <dd className="mono" style={{ fontSize: 12 }}>{l.lastFiredAt ? fmt(l.lastFiredAt) : '（尚未触发过）'}</dd>
                   </div>
+                  <div className="kv-row">
+                    <dt>任务版本</dt>
+                    <dd>
+                      <span className="tag mono" style={{ fontSize: 11 }}>v{l.promptVersion ?? 1}</span>
+                      {(l.promptVersions || []).length > 0 ? (
+                        <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>
+                          已保留 {l.promptVersions.length} 个历史版（改动此处会归档当前版并升为 v{(l.promptVersion ?? 1) + 1}）
+                        </span>
+                      ) : (
+                        <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>（从未改过任务描述）</span>
+                      )}
+                    </dd>
+                  </div>
                 </>
               );
             })()}
@@ -547,6 +560,34 @@ export default function LoopView() {
               </dd>
             </div>
           </dl>
+          {/* 当轮用的 prompt：审计只记版号，全文去状态文件的 promptVersions 里查。
+              改过任务描述时这一行能回答「第 N 轮当时在做什么」，不然复盘只剩产出、没有指令。 */}
+          {(() => {
+            const l = (loops || []).find((x) => x.id === viewLog.loopId);
+            if (!l) return null;
+            const v = viewLog.promptVersion ?? 1;
+            const cur = (l.promptVersion ?? 1) === v;
+            const text = cur ? l.prompt : (l.promptVersions || []).find((p) => p.v === v)?.text;
+            return (
+              <div style={{ marginBottom: 10 }}>
+                <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+                  本轮任务描述 <span className="tag mono" style={{ fontSize: 11 }}>v{v}</span>
+                  {cur ? <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>（当前版）</span>
+                    : <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>（历史版——之后被改过）</span>}
+                  {!text ? <span className="bad" style={{ marginLeft: 6, fontSize: 11 }}>已超出保留上限，无法回溯</span> : null}
+                </div>
+                {text ? (
+                  <details>
+                    <summary className="muted" style={{ fontSize: 11, cursor: 'pointer' }}>展开看当轮完整任务描述</summary>
+                    <pre style={{
+                      margin: '6px 0 0', padding: 10, background: 'var(--soft-1)', border: '1px solid var(--soft-2)',
+                      borderRadius: 4, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '30vh', overflow: 'auto',
+                    }}>{text}</pre>
+                  </details>
+                ) : null}
+              </div>
+            );
+          })()}
           <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
             这一轮 Stop hook 从 transcript 取到的最后一条 assistant 文本——即「这一轮 Agent 做了什么」。
             {/* 早期版本只存 200 字且把换行折叠掉了，那些历史条目补不回来——如实标出，别让人以为是被截了 */}
