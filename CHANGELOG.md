@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.9.2 / 2026-09-29
+
+- **loop 面板：会话归属可见可选 + 循环可编辑可删除 + 拒绝匿名循环**（特性型）
+  - **修 3 个 loop 面板的实际缺陷**（用户报告字体重叠后连带查出）
+    - **字体重叠**：`.row` 的固定行高 `--row-h: 28px` 是给单行列表设计的，
+      而循环列表的行里塞了元信息 + prompt + 进度条三行，内容溢出重叠。
+      新增 `.row.wrap` 修饰类解除固定高度；循环列表与审计日志改用。
+    - **会话归属误报「匿名」**：渲染只检查 `loop.sessionId`，忽略了
+      `claudeSessionId`（启动时从 `CLAUDE_CODE_SESSION_ID` 捕获的）。
+      于是靠 env 绑定好会话的循环被显示成「匿名——靠 pickLoop 的 env 兜底匹配」，
+      与实际不符。**CLI 与面板两处都有此错**，已统一为
+      「两个字段取先有值者」的 `sessionLabel()` / `SessionTag`。
+    - **面板根本没把 `sessionId` 传给布防接口**：布防只能靠 env 捕获，
+      用户无法指定会话。这是 `sessionId: null` 的根因。
+  - **A. 会话绑定可见可选**
+    - `hookStatus` 补 `currentSessionId`（读服务进程 env）；面板据此显示默认值。
+      语义边界写进注释与 UI：这是**服务进程**的会话身份，`serve` 从普通终端启动时为
+      null，此时面板明示「拿不到，请填」而非假装知道。
+    - 布防表单新增「会话」输入 + 两态绑定提示（留空 / 显式分别提示绑到谁）。
+    - CLI `loop start` 渲染改用 `sessionHint()`：绑错会话或没有身份时给出改绑命令。
+    - CLI `loop status` 列表也显示会话短码（与面板同规则；env 捕获的带 `*`）——
+      只说「无会话」而不显示归属，等于把「布防了却不会被触发」的原因藏起来。
+  - **B. 匿名循环不该存在**
+    - 删掉 `pickLoop` 末尾的「无名候选收养」回退——留着它只会给「身份匹配失败」
+      提供一个静默兜底，掩盖真正的会话归属 bug。
+    - `startLoop` 拿不到任何会话身份时抛 `INVALID_INPUT`（附解法），
+      而不是静默建一条 Stop hook 永远认领不到的死循环。
+    - 旧数据里已有的无名循环：读取不崩、列表标「无会话（旧数据）」、不被认领。
+    - 说明边界：此校验跑在**启动进程**里，而 Stop hook 认领时用的是
+      **hook 进程**的 env——所以是降低发生概率，非机制上根除。
+  - **C. 布防任务可编辑**（为「动态规划」而设：跑起来之后目标会变）
+    - `updateLoop({id, prompt, maxIterations, completionPromise, sessionId})`，走原子写。
+    - **复活语义**：因到上限而停（`endReason === 'max-iterations'`）的循环，
+      提高上限时自动 `active: true`（「再给它 20 轮」的自然表达）；
+      手工 `cancel` 的不复活（那是用户的显式停止意图）；只改 prompt 不改上限的也不复活。
+    - `sessionId` 可改绑——布防时绑错会话的补救。
+    - action `loop.update`（`nx-rp loop update` / `POST /api/loop/update`）；
+      面板用**展开式编辑卡片**（多字段，`useDialog` 只支持单输入框），
+      改完点「保存」才提交、可「放弃」。
+  - **D. 已结束的循环可删除**
+    - `removeLoop` 真删记录（区别于 `cancel` 的「标记结束、记录留着」——
+      面板上只增不减，列表会越堆越长）。默认只允许删已结束的，删活跃的需 `--force`。
+    - action `loop.remove` + 面板「删除」按钮（活跃的显示「取消」，已结束的显示「删除」）。
+  - `Copyable` 组件补可选 `style` prop（原先不透传，调用方传了会被静默丢弃）
+  - 测试：loop 单测 44 条（新增 updateLoop 正常/复活/不复活/找不到 id、
+    removeLoop 活跃拒绝与 force、startLoop 匿名拒绝、pickLoop 去回退后的行为）；
+    全量 200 单测 + 7 smoke 全绿
+
 ## 0.9.1 / 2026-09-29
 
 - **skill：`--group` 安装机制 + 新增 `rp-loop` skill + 修两处参数解析静默错路径**（特性型）
