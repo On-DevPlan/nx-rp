@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.9.0 / 2026-09-29
+
+- **loop：自引用循环（Ralph 技术）——Stop hook + 项目级开关 + Web 面板**（特性型，新模块）
+  - 机制（复刻官方 ralph-loop 插件，纯 Node 重写）：
+    - `nx-rp loop start "<任务>"` 布防 → 状态写 `~/.nx-rp/loops/<cwdSha1>.json`
+    - `nx-rp loop stop` 是 Stop hook 落点：stdin 收事件 JSON，stdout 出判决 JSON
+      - 未命中 → `{"decision":"block","reason":"<prompt 原文>","systemMessage":"🔄 第 N/M 轮"}`
+      - 命中 `<promise>X</promise>` → `{"systemMessage":"✅ 完成"}`；超限 → `{"systemMessage":"🛑 已达上限"}`
+      - 其余一律空输出放行；**永不抛错、退出码恒 0**
+  - **开关基于项目**（与 ralph 的项目级语义一致）：
+    - 默认写 `<项目>/.claude/settings.local.json`（本地级，个人），非全局 `~/.claude/settings.json`
+      ——只有配了 hook 的项目才会被拦截退出
+    - `--scope shared` 切到 `<项目>/.claude/settings.json`（项目级，入库，团队共享）
+    - 写本地级时自动追加 `.gitignore` 忽略行并明确回报；`--scope shared` 不碰 .gitignore
+    - **快照集中到 `~/.nx-rp/snapshots/`**，不落进项目目录污染仓库
+  - 相对 ralph-loop 的加固：
+    - 状态是**数组** + 会话选路 → 同一项目多会话**并行循环**互不干扰
+      （ralph 是单文件单实例，同项目第二个会话会顶掉第一个）
+    - 异常分支**保持 active 降级放行**（ralph 在 8 个错误路径上 `rm` 状态文件，
+      一次瞬时 IO 抖动就永久终结循环）
+    - `<promise>` 无标签时返回 `null`（ralph 的 perl 不匹配会返回**全文**，可能误判完成）
+    - 排除 `isSidechain`（子 agent 的文本不算主 agent 的完成信号）
+    - 每轮判定写审计日志（`~/.nx-rp/loops/<hash>.jsonl`），记 `lastTextChars`
+      供面板一眼看出 transcript 解析是否失效
+  - 协议纪律：`loop.stop` 刻意**不声明 render**——`cli.js` 的 `renderCli` 优先用
+    `action.render`，一旦有 render，钩子拿到的就不是判决 JSON 而是人类可读文本，循环静默失效（smoke 断言锁死）
+  - core 改动（向后兼容，另两个 hook 模块零影响）：
+    - `core/paths.js` 加 `LOOPS_DIR` / `SNAPSHOTS_DIR` / `loopsFileFor` / `loopsLogFileFor`，
+      并把 prompts/skills 的哈希分文件逻辑收敛到共用 `hashOf`
+    - `core/claude-settings.js` 的 `readSettings` / `writeSettings` / `toggleSettings` /
+      `snapshotSettings` 支持可选 `settingsPath` / `snapshotDir`（缺省＝原行为）
+  - 面板：Hook 状态卡（本地级/项目级双路径明细）+ 布防表单 + 循环列表（带轮次进度条）
+    + 迭代日志卡 + 复用 `ManualAddCard`（eventKey=Stop）
+  - 测试 36 项全绿：六判决分支、transcript 畸形输入（坏行/空文本块/子 agent/尾部截断）、
+    promise 精确匹配、项目级开关隔离与快照落点、.gitignore 保护、多实例并存
+
 ## 0.8.4 / 2026-09-28
 
 - **hook-prompt：提示词日志 sessionId 落地 + UI / CLI 展示 + 按 cwd 分组筛选**（特性型）
