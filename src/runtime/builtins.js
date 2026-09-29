@@ -181,19 +181,68 @@ function diffTrees(src, dst) {
   return diffs;
 }
 
-async function runInstall(argv) {
-  const force = argv.includes('--force');
-  const toIdx = argv.indexOf('--to');
-  const to = toIdx >= 0 && argv[toIdx + 1] ? argv[toIdx + 1] : DEFAULT_SKILLS_DIR;
+// ─── skill 参数解析 ────────────────────────────────────────────────
+//
+// 集中式 token 扫描（install 与 get 共用）。**不**用 argv 硬位置取值——
+// 那会踩两个已实测复现的坑：
+//   `install --force bogus`    → argv[1] 是 '--force'，被特判成「无名」，
+//                                于是静默装成默认的 nx-rp，用户敲的名字被忽略
+//   `install x --to --force`   → --to 缺值时静默回落到 DEFAULT_SKILLS_DIR
+//                                （真实 ~/.claude/skills），且把 --force 当目录名
+// 规则：已知 flag 缺值一律抛错（宁可报错，不可静默走错路径）；未知 --x 容忍跳过
+// （向前兼容）；值以 '-' 开头视为缺值（否则 --flag 会把下一个 flag 吞成它的值）。
+function parseSkillArgs(argv) {
+  const positional = [];
+  const flags = {};
+  const VALUE_FLAGS = new Set(['--to', '--group']);
 
-  // skill 名：argv[1]（如果有且不是 --to/--force）
-  let skillName = argv[1];
-  if (skillName && (skillName === '--to' || skillName === '--force')) {
-    // --to 在前
-    skillName = undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--force') { flags.force = true; continue; }
+
+    // --name=value 形态
+    const eq = a.indexOf('=');
+    if (eq > 2 && a.startsWith('--')) {
+      const name = a.slice(0, eq);
+      if (VALUE_FLAGS.has(name)) {
+        const v = a.slice(eq + 1);
+        if (!v) throw _invalidInput(`${name} 需要一个值（收到空值: ${a}）`);
+        flags[name.slice(2)] = v;
+        continue;
+      }
+      // 未知 --x=y：容忍跳过（向前兼容）
+      continue;
+    }
+
+    // --name value 形态
+    if (VALUE_FLAGS.has(a)) {
+      const v = argv[i + 1];
+      if (v === undefined || v.startsWith('-')) {
+        throw _invalidInput(`${a} 需要一个值（后面是 ${v === undefined ? '结尾' : `另一个 flag: ${v}`}）`);
+      }
+      flags[a.slice(2)] = v;
+      i++;
+      continue;
+    }
+
+    if (a.startsWith('--')) continue; // 未知 flag 容忍
+    positional.push(a);
+  }
+  return { positional, flags };
+}
+
+async function runInstall(argv) {
+  const { positional, flags } = parseSkillArgs(argv);
+  const force = !!flags.force;
+  const to = flags.to || DEFAULT_SKILLS_DIR;
+
+  // 剥掉子命令名（argv[0] === 'install'），位置参数里第一个才是 skill 名
+  const nameArgs = positional.slice(1);
+  if (nameArgs.length > 1) {
+    throw _invalidInput(`只接受一个 skill 名（收到: ${nameArgs.join(', ')}）`);
   }
   // 默认名 = 包名
-  if (!skillName) skillName = 'nx-rp';
+  const skillName = nameArgs[0] || flags.group || 'nx-rp';
 
   const src = join(ASSETS_ROOT, skillName);
   if (!existsSync(src) || !existsSync(join(src, 'SKILL.md'))) {
@@ -236,27 +285,18 @@ async function runInstall(argv) {
 //   - ref 路径解析：缺省 SKILL.md；带分隔符或 ./ 开头走资产根相对解析（assertInside 兜底）；
 //     裸名先查 references/<name>.md，再查 <name>.md。
 async function runGet(argv) {
-  // 解析 flag；--to 取其值，--force 静默丢弃
-  let customTo;
-  const positional = [];
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--to') {
-      const v = argv[++i];
-      if (v !== undefined) customTo = v;
-      continue;
-    }
-    if (a === '--force') continue;
-    positional.push(a);
-  }
-  const skillName = positional[1] || 'nx-rp';
+  const { positional, flags } = parseSkillArgs(argv);
+  const skillName = positional[1] || flags.group || 'nx-rp';
   const ref = positional[2]; // 缺省 → resolveRefDoc 默认走 SKILL.md
+  if (positional.length > 3) {
+    throw _invalidInput(`位置参数过多（收到: ${positional.slice(3).join(', ')}）—— 用法: nx-rp skill get [name] [ref]`);
+  }
 
   const doc = resolveRefDoc(skillName, ref);
 
   // 构造 install argv（剥离 ref 与所有 flag）
   const installArgv = ['install', skillName];
-  if (customTo) installArgv.push('--to', customTo);
+  if (flags.to) installArgv.push('--to', flags.to);
   const installResult = await runInstall(installArgv);
 
   return {

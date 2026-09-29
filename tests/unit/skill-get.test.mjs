@@ -281,3 +281,58 @@ test('E1 unknown subcommand → INVALID_INPUT 错误信息列两个子命令', a
     },
   );
 });
+
+// ============================================================
+// F. 参数解析（曾经的静默错路径 —— 均为实测复现过的 bug）
+// ============================================================
+
+test('F1 install --force <name>：名字不得被 flag 吃掉（曾静默装成 nx-rp）', async () => {
+  const skill = await loadSkill();
+  // bug 形态：argv[1] === '--force' 被特判成「无名」→ 装默认的 nx-rp
+  await assert.rejects(
+    () => skill.run(['install', '--force', 'bogus', '--to', tmp]),
+    /未找到内置 skill: bogus/,
+    '必须报错，不能静默回落成 nx-rp',
+  );
+  // --force 与名字的顺序都不该影响结果
+  const r = await skill.run(['install', '--force', 'nx-rp', '--to', tmp]);
+  assert.equal(r.path, join(tmp, 'nx-rp'));
+  assert.equal(r.installed, true);
+});
+
+test('F2 install --to 缺值：必须报错，绝不静默回落到真实 ~/.claude/skills', async () => {
+  const skill = await loadSkill();
+  // bug 形态：--to 缺值 → to 为 fallback → 打到 DEFAULT_SKILLS_DIR
+  await assert.rejects(
+    () => skill.run(['install', 'nx-rp', '--to', '--force']),
+    /--to 需要一个值/,
+    '--to 后面跟另一个 flag 必须报错（否则会把 --force 当目录名）',
+  );
+  await assert.rejects(
+    () => skill.run(['install', 'nx-rp', '--to']),
+    /--to 需要一个值/,
+    '--to 在结尾必须报错',
+  );
+});
+
+test('F3 --to= 空值也报错（空值不等于缺省）', async () => {
+  const skill = await loadSkill();
+  await assert.rejects(() => skill.run(['install', 'nx-rp', '--to=']), /需要一个值/);
+});
+
+test('F4 多个位置参数 → 报错，不静默取第一个', async () => {
+  const skill = await loadSkill();
+  await assert.rejects(
+    () => skill.run(['install', 'nx-rp', 'loop', '--to', tmp]),
+    /只接受一个 skill 名/,
+  );
+});
+
+test('F5 get 位置参数过多 → 报错（不静默忽略多余的）', async () => {
+  const skill = await loadSkill();
+  await assert.rejects(
+    () => skill.run(['get', 'nx-rp', 'prompt-log', 'extra', '--to', tmp]),
+    /位置参数过多/,
+  );
+});
+
