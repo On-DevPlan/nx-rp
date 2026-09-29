@@ -44,6 +44,15 @@ nx-rp hook on                启用提示词日志 hook（写 ~/.claude/settings
 nx-rp hook log               看当前目录的提示词记录（--all 跨目录）
 nx-rp hook off               停用（只摘自己的 entry，其余 hooks 不动）
 nx-rp hook skill-on / skills 启用 Skill 追踪 / 看 skill 使用统计与健康分
+nx-rp loop on                在当前项目启用循环 hook（写 .claude/settings.local.json，
+                             不写全局——只有本项目会被拦截退出；自动补 .gitignore 忽略行）
+nx-rp loop start "<任务>"    布防自引用循环：Stop hook 反复灌回这条提示词，
+                             --completion-promise DONE 出现 <promise>DONE</promise> 即结束，
+                             --max-iterations N 兜底（默认 20，0 = 无限）
+nx-rp loop status            看 hook 开关 + 当前目录的循环与轮次
+nx-rp loop log               看每轮判定审计（继续/命中/超限；--all 跨目录）
+nx-rp loop cancel            取消循环（不带 --id 则取消全部活跃）
+nx-rp loop off               停用（本地级+项目级都摘，其余 hooks 不动）
 nx-rp zg onboard             召回引擎引导：装 zg → 拿 key → 选模型 → 用起来
 nx-rp doc export             doc 知识实例文件化（镜像到知识库目录，可被 zg 索引）
 nx-rp zg index / query       知识库建索引 / 语义召回（远程 qwen embedding）

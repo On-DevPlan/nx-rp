@@ -13,24 +13,32 @@ import { CLAUDE_SETTINGS_PATH } from './paths.js';
 
 // 写 settings 前留可回滚快照。快照失败视为前置条件失败——「先快照再动手」的
 // 保证不能在快照环节悄悄失效。写完轮转，只留最近 KEEP 份。
+//
+// 快照落点可指定（snapshotDir）：loop 模块写的是**项目级**配置，快照若落在
+// 项目 .claude/ 里会污染仓库，所以它传 ~/.nx-rp/snapshots/。缺省＝与目标同目录
+// （用户级配置的历史行为，另两个 hook 模块依赖）。
 const SNAPSHOT_KEEP = 5;
-const SNAPSHOT_PREFIX = 'settings.json.nx-rp-bak-';
 
-async function snapshotSettings() {
+async function snapshotSettings(targetPath = CLAUDE_SETTINGS_PATH, snapshotDir = null) {
   let raw;
   try {
-    raw = await fsp.readFile(CLAUDE_SETTINGS_PATH, 'utf8');
+    raw = await fsp.readFile(targetPath, 'utf8');
   } catch (e) {
     if (e && e.code === 'ENOENT') return null; // 原文件不存在，无需快照
     throw e;
   }
-  const dir = dirname(CLAUDE_SETTINGS_PATH);
+  const dir = snapshotDir || dirname(targetPath);
+  await fsp.mkdir(dir, { recursive: true });
+  // 快照名带目标文件名与时间戳：集中目录里要能区分是哪个配置的快照
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const snap = join(dir, SNAPSHOT_PREFIX + stamp);
+  const base = targetPath.split(/[\\/]/).pop();
+  const prefix = `${base}.nx-rp-bak-`;
+  const snap = join(dir, prefix + stamp);
   await fsp.writeFile(snap, raw, 'utf8');
-  // 轮转：按文件名排序（时间戳命名保证字典序=时间序），超出的删旧
+  // 轮转：按文件名排序（时间戳命名保证字典序=时间序），超出的删旧。
+  // 只轮转同一前缀的——集中目录里可能有多个项目/多个配置的快照共存。
   const olds = (await fsp.readdir(dir))
-    .filter((f) => f.startsWith(SNAPSHOT_PREFIX))
+    .filter((f) => f.startsWith(prefix))
     .sort()
     .slice(0, -SNAPSHOT_KEEP);
   for (const f of olds) {
@@ -43,10 +51,10 @@ async function snapshotSettings() {
 //   文件不存在 → {}（用户显式开关动作，允许创建）
 //   读失败（权限等）→ 上抛（不许带着空对象走写盘路径）
 //   JSON 损坏 → 上抛（绝不能拿 {hooks} 覆盖用户全部配置——permissions/env 全在里面）
-export async function readSettings() {
+export async function readSettings(targetPath = CLAUDE_SETTINGS_PATH) {
   let raw;
   try {
-    raw = await fsp.readFile(CLAUDE_SETTINGS_PATH, 'utf8');
+    raw = await fsp.readFile(targetPath, 'utf8');
   } catch (e) {
     if (e && e.code === 'ENOENT') return {};
     throw e;
@@ -56,18 +64,18 @@ export async function readSettings() {
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('not an object');
     return data;
   } catch {
-    const err = new Error(`settings.json 无法解析（${CLAUDE_SETTINGS_PATH}）——请先修复该文件再执行 hook on/off`);
+    const err = new Error(`settings.json 无法解析（${targetPath}）——请先修复该文件再执行 hook on/off`);
     err.code = 'INVALID_INPUT';
     throw err;
   }
 }
 
-export async function writeSettings(data) {
-  await fsp.mkdir(dirname(CLAUDE_SETTINGS_PATH), { recursive: true });
+export async function writeSettings(data, targetPath = CLAUDE_SETTINGS_PATH) {
+  await fsp.mkdir(dirname(targetPath), { recursive: true });
   // tmp 名带 pid：并发写者（CLI + 面板同时点）不该共用同一个 tmp 文件
-  const tmp = `${CLAUDE_SETTINGS_PATH}.${process.pid}.tmp`;
+  const tmp = `${targetPath}.${process.pid}.tmp`;
   await fsp.writeFile(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
-  await fsp.rename(tmp, CLAUDE_SETTINGS_PATH);
+  await fsp.rename(tmp, targetPath);
 }
 
 // 在 hooks.<事件> 数组里找带指定 marker 的组（认亲只看 marker，不看 command 细节）。
@@ -133,13 +141,18 @@ export function removeOwnGroups(settings, { event, marker, commands }) {
 }
 
 // 开关动作的标准骨架：读 → 变更 → 快照 → 写。dry-run 永不写盘。
-export async function toggleSettings(mutate, { dryRun = false } = {}) {
-  const settings = await readSettings();
+//
+// settingsPath / snapshotDir 可指定：loop 模块操作的是**项目级**配置
+// （<项目>/.claude/settings.local.json），且快照要丢到 ~/.nx-rp/snapshots/
+// 以免污染仓库。缺省＝用户级 ~/.claude/settings.json + 同目录快照。
+export async function toggleSettings(mutate, { dryRun = false, settingsPath, snapshotDir } = {}) {
+  const target = settingsPath || CLAUDE_SETTINGS_PATH;
+  const settings = await readSettings(target);
   const next = structuredClone(settings);
   const changed = mutate(next);
   if (dryRun) return { changed, written: false, snapshot: null };
   if (!changed) return { changed: false, written: false, snapshot: null };
-  const snapshot = await snapshotSettings();
-  await writeSettings(next);
+  const snapshot = await snapshotSettings(target, snapshotDir || null);
+  await writeSettings(next, target);
   return { changed: true, written: true, snapshot };
 }

@@ -8,4 +8,5 @@ export const VIEWS = [
   { id: 'hook-prompt', title: '提示词日志', component: lazy(() => import('../../modules/hook-prompt/view.jsx')) },
   { id: 'hook-skill', title: 'Skill 追踪', component: lazy(() => import('../../modules/hook-skill/view.jsx')) },
   { id: 'annotations', title: '文件批注', component: lazy(() => import('../../modules/annotations/view.jsx')) },
+  { id: 'loop', title: '循环', component: lazy(() => import('../../modules/loop/view.jsx')) },
 ];

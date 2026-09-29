@@ -65,34 +65,56 @@ export let SKILLS_DIR = (() => {
   const path = _path();
   return h && path ? path.join(h, '.nx-rp', 'skills') : null;
 })();
+// loop 状态与审计日志（按 cwd 分文件，同 prompts/skills 的模式）
+export let LOOPS_DIR = (() => {
+  const h = home();
+  const path = _path();
+  return h && path ? path.join(h, '.nx-rp', 'loops') : null;
+})();
+// 快照集中目录：项目级配置的快照不落在项目里（会污染仓库），统一丢这儿
+export let SNAPSHOTS_DIR = (() => {
+  const h = home();
+  const path = _path();
+  return h && path ? path.join(h, '.nx-rp', 'snapshots') : null;
+})();
 
-export function setHookPaths({ settingsPath, promptsDir, skillsDir } = {}) {
+export function setHookPaths({ settingsPath, promptsDir, skillsDir, loopsDir, snapshotsDir } = {}) {
   if (settingsPath !== undefined) CLAUDE_SETTINGS_PATH = settingsPath;
   if (promptsDir !== undefined) PROMPTS_DIR = promptsDir;
   if (skillsDir !== undefined) SKILLS_DIR = skillsDir;
+  if (loopsDir !== undefined) LOOPS_DIR = loopsDir;
+  if (snapshotsDir !== undefined) SNAPSHOTS_DIR = snapshotsDir;
 }
 
 // hook 日志按目录哈希分文件：文件名全 ASCII，避免 cwd 里的中文/空格进路径。
-export function promptsFileFor(cwd) {
+// ext 由调用方给（日志 .jsonl / 状态 .json）。
+function hashOf(dir, cwd, ext) {
   const norm = normalizeScope(cwd);
   const hash = (() => {
     const c = _crypto();
     return c ? c.createHash('sha1').update(norm).digest('hex').slice(0, 12) : null;
   })();
   const path = _path();
-  if (!path || !PROMPTS_DIR || !hash) return null;
-  return { key: norm, hash, file: path.join(PROMPTS_DIR, `${hash}.jsonl`) };
+  if (!path || !dir || !hash) return null;
+  return { key: norm, hash, file: path.join(dir, `${hash}${ext}`) };
+}
+
+export function promptsFileFor(cwd) {
+  return hashOf(PROMPTS_DIR, cwd, '.jsonl');
 }
 
 export function skillsFileFor(cwd) {
-  const norm = normalizeScope(cwd);
-  const hash = (() => {
-    const c = _crypto();
-    return c ? c.createHash('sha1').update(norm).digest('hex').slice(0, 12) : null;
-  })();
-  const path = _path();
-  if (!path || !SKILLS_DIR || !hash) return null;
-  return { key: norm, hash, file: path.join(SKILLS_DIR, `${hash}.jsonl`) };
+  return hashOf(SKILLS_DIR, cwd, '.jsonl');
+}
+
+// loop 状态：每个 cwd 一个 JSON 文件（loops 数组，支持同 cwd 多会话并存）
+export function loopsFileFor(cwd) {
+  return hashOf(LOOPS_DIR, cwd, '.json');
+}
+
+// loop 审计日志：与状态同 hash，扩展名不同——落同一目录便于人肉对照
+export function loopsLogFileFor(cwd) {
+  return hashOf(LOOPS_DIR, cwd, '.jsonl');
 }
 
 export function storePathFromEnv() {

@@ -12,4 +12,5 @@ export * as deps from './modules/deps/service.js';
 export * as hookPrompt from './modules/hook-prompt/service.js';
 export * as hookSkill from './modules/hook-skill/service.js';
 export * as annotations from './modules/annotations/service.js';
+export * as loop from './modules/loop/service.js';
 export * as zg from './modules/doc/zg.js';
