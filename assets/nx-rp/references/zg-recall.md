@@ -44,11 +44,11 @@ nx-rp doc root --set <dir>             # 改全局根（旧 KB 全量复制迁�
 
 ## 三、可选远程模型（zg 目录内的全部远程款）
 
-| 模型 id | 维度 | 输入 tokens | 说明 |
-| --- | --- | --- | --- |
-| `qwen/qwen3.7-text-embedding` | 1024 | 128K | **默认**；超长文档 |
-| `qwen/text-embedding-v4` | 1024 | 8K | 经典款 |
-| `qwen/qwen3-vl-embedding` | 2560 | 32K | 唯一支持图片 |
+| 模型 id                         | 维度 | 输入 tokens | 说明                     |
+| ------------------------------- | ---- | ----------- | ------------------------ |
+| `qwen/qwen3.7-text-embedding` | 1024 | 128K        | **默认**；超长文档 |
+| `qwen/text-embedding-v4`      | 1024 | 8K          | 经典款                   |
+| `qwen/qwen3-vl-embedding`     | 2560 | 32K         | 唯一支持图片             |
 
 模型统一存 zg 全局配置（`~/.zvec-grep/config.json`），所有 workspace 共用。
 换模型必须对已建索引的 KB 跑 `zg index --rebuild --model <m>`（维度锁定，否则拒绝）。
@@ -89,9 +89,9 @@ nx-rp doc root --set <dir>             # 改全局根（旧 KB 全量复制迁�
 
 ## 七、排障
 
-| 症状 | 先查 | 说明 |
-| --- | --- | --- |
-| `WORKSPACE_INDEX_NOT_FOUND` | KB 目录是否有 `.zvec-grep/` | `zg status`；没有就 `zg index`（zg 0.2.x query 从进程 cwd 解析 workspace，nx-rp 已在 KB 目录里跑子进程） |
-| `Unsupported embedding model` | `zg help models` | 模型 id 必须在 zg 目录内；nx-rp 侧 `resolveModel` 也会先拦 |
-| 召回结果过旧 | 改过 md 后是否重新 `zg index` | zg 0.2.x 无查询前自动探测（新版 direct 才有），改完知识要手动重建/增量 |
-| 索引失败：401/403 | key 是否有效 / workspace 授权 | `zg auth status`；重新 `zg auth --key` |
+| 症状                            | 先查                           | 说明                                                                                                         |
+| ------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `WORKSPACE_INDEX_NOT_FOUND`   | KB 目录是否有`.zvec-grep/`   | `zg status`；没有就 `zg index`（zg 0.2.x query 从进程 cwd 解析 workspace，nx-rp 已在 KB 目录里跑子进程） |
+| `Unsupported embedding model` | `zg help models`             | 模型 id 必须在 zg 目录内；nx-rp 侧`resolveModel` 也会先拦                                                  |
+| 召回结果过旧                    | 改过 md 后是否重新`zg index` | zg 0.2.x 无查询前自动探测（新版 direct 才有），改完知识要手动重建/增量                                       |
+| 索引失败：401/403               | key 是否有效 / workspace 授权  | `zg auth status`；重新 `zg auth --key`                                                                   |
