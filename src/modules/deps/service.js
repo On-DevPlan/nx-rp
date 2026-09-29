@@ -230,6 +230,9 @@ export async function depsToDot(rootDir) {
     nodes: ids.map((id) => ({ id, fillcolor: color(id) })),
     edges,
     stats: { files: ids.length, edges: edges.length, crossLayer },
+    // 事实来源标识：当前 depsToDot 只产出扫描结果，预留枚举便于
+    // 未来扩展（如 imported / workflow），面板靠这个字段显示「来源」。
+    source: 'scan',
   };
 }
 

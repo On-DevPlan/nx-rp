@@ -53,8 +53,8 @@ export default {
     {
       id: 'deps.load',
       cli: ['deps', 'load'],
-      http: ['GET', '/api/deps/load'],
-      summary: '读取 .dot 文本（绝对或 cwd 相对；上限 200K，二进制拒绝）——导入外部图',
+      http: null,
+      summary: '读取 .dot 文本（绝对或 cwd 相对；上限 200K，二进制拒绝）——CLI 专用：HTML 视图导入走前端 FileReader，不暴露 HTTP',
       flags: { file: { type: 'string', required: true, hint: '.dot 文件路径' } },
       run: (ctx) => service.loadDot({ file: ctx.file }),
       render: (r) => `${r.file}（${r.chars} 字符）\n${r.dot}`,

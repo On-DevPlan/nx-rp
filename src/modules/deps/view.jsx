@@ -1,12 +1,17 @@
-// deps 面板：双模式（预览 / 编辑）。
+// deps 面板：单一事实源。
 //
-// 预览（默认）：服务端扫描结果（depsToDot 的 DOT）→ viz-js 渲染。
-// 编辑：textarea 看/改 DOT 文本 → 浏览器本地 WASM 实时预览（零网络往返）；
-//   语法错误结构化显示（render 返回 failure 不抛异常），旧图降透明保留——
-//   清空会在打字过程（半个引号、少个花括号的中间态）闪烁且丢失定位。
-// 另存：当前模式的 DOT 文本落盘到 cwd（激活 scope）相对路径（.dot/.gv）。
-// 导入：<input type=file> 前端 FileReader 直读，不落盘不过服务端。
-// 图的事实源永远是源码 import（scan）；编辑器里的只是 DOT 文本草稿。
+// 注释里反复强调的事——图是「源码推导的只读视图，编辑无意义」——
+// 反映到 UI 上就是：预览画板、编辑器画板、待存的图，三者必须同源。
+//
+// 收敛后的流程只剩两条入口 + 一条落盘：
+//   · 重新扫描      → 服务端重生成 graph.dot（事实源更新）
+//   · 导入 .dot     → 用外部 DOT 替换当前事实源（标识符数变，source=imported）
+//   · 另存 .dot     → 把"当前画板上看到的"那份 DOT 落盘（语义：你看到什么，存什么）
+//
+// 编辑模式只是「在最新事实源上打草稿」：进入 edit 时自动同步 graph.dot 到编辑器，
+// 不再需要"回填扫描结果"按钮与覆盖确认弹窗——草稿态由 stats 行的小字提示。
+// 缩放条原先的"适应宽度"是误标题（只把外层宽度设回 100% 而 svg viewBox 没动），
+// 去掉这个误导按钮，只保留 −/100%/＋ 三键。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { instance as vizInstance } from '@viz-js/viz';
 import { api } from '../../web/frontend/api/client.js';
@@ -21,19 +26,21 @@ const getViz = () => (vizPromise ??= vizInstance());
 const DOT_FILE_DEFAULT = '.nx-rp-deps.dot';
 
 export default function DepsView() {
-  const [mode, setMode] = useState('preview');        // 'preview' | 'edit'
-  const [graph, setGraph] = useState(null);           // 服务端 {dot, stats}——预览事实源
-  const [editText, setEditText] = useState('');       // 编辑器内容——编辑事实源
-  const [editDirty, setEditDirty] = useState(false);  // 编辑器是否被改过（回填确认用）
-  const [editErrors, setEditErrors] = useState([]);   // 最近一次 render 的 errors
-  const [svg, setSvg] = useState('');                 // 最近一次**成功**的 svg（两模式共用）
+  const [mode, setMode] = useState('preview');         // 'preview' | 'edit'
+  const [graph, setGraph] = useState(null);            // 服务端 {dot, stats, source}——事实源
+  const [editText, setEditText] = useState('');        // 编辑器内容（草稿）
+  const [editDirty, setEditDirty] = useState(false);   // 编辑器是否被改过
+  const [editSource, setEditSource] = useState('scan');// 编辑器当前内容来源：'scan' | 'imported'
+  const [editErrors, setEditErrors] = useState([]);    // 最近一次 render 的 errors
+  const [svg, setSvg] = useState('');                  // 最近一次**成功**的 svg（两模式共用）
   const [zoom, setZoom] = useState(100);
   const [vizReady, setVizReady] = useState(false);
   const [loading, setLoading] = useState(false);
   const guard = useGuard();
   const toast = useToast();
   const { dialog, node: dialogNode } = useDialog();
-  const renderSeq = useRef(0); // 竞态防护：慢渲染回来时丢弃过期结果
+  const fileInputRef = useRef(null);                   // 导入按钮的真 button 触发
+  const renderSeq = useRef(0);                         // 竞态防护：慢渲染回来时丢弃过期结果
 
   // viz 初始化（一次性）
   useEffect(() => { getViz().then(() => setVizReady(true)); }, []);
@@ -53,10 +60,12 @@ export default function DepsView() {
     }), [guard, toast]);
   useEffect(() => { doScan(); }, [doScan]);
 
-  // 统一渲染：source = 预览 ? graph.dot : editText（编辑模式 300ms debounce）
+  // 统一渲染：source = preview ? graph.dot : (editDirty ? editText : graph.dot)
+  // ——editor 没改过时直接渲最新扫描结果；改了才用 editText。这样保证预览与
+  // 编辑画板在「同一份 dot」上看到一致的结果。
   useEffect(() => {
     if (!vizReady) return;
-    const source = mode === 'preview' ? graph?.dot : editText;
+    const source = (mode === 'preview' || !editDirty) ? graph?.dot : editText;
     if (!source || !source.trim()) { setSvg(''); setEditErrors([]); return; }
     const seq = ++renderSeq.current;
     const ctl = setTimeout(() => {
@@ -74,33 +83,33 @@ export default function DepsView() {
         .catch((e) => { if (seq === renderSeq.current) toast('渲染失败: ' + e.message); });
     }, mode === 'preview' ? 0 : 300);
     return () => clearTimeout(ctl);
-  }, [mode, graph, editText, vizReady, toast]);
+  }, [mode, graph, editText, editDirty, vizReady, toast]);
 
-  // 进编辑模式：首次用扫描结果种子化；再次切换保留草稿
+  // 进编辑模式：用最新 graph.dot 种子化编辑器；用户在 edit 里看到的图 = 扫描结果。
   const enterEdit = useCallback(() => {
     setMode('edit');
-    if (!editText && graph?.dot) setEditText(graph.dot);
-  }, [editText, graph]);
+    setEditText(graph?.dot ?? '');
+    setEditDirty(false);
+    setEditSource('scan');
+  }, [graph]);
 
-  // 回填：把最新扫描结果灌进编辑器（有改动先确认）
-  const doSyncFromScan = useCallback(() =>
-    guard(async () => {
-      if (!graph?.dot) { toast('还没有扫描结果'); return; }
-      if (editDirty) {
-        const ok = await dialog({ title: '覆盖编辑器内容？', message: '当前草稿会被最新扫描结果替换。', danger: true, okText: '覆盖' });
-        if (!ok) return;
-      }
-      setEditText(graph.dot);
-      setEditDirty(false);
-      toast('已回填扫描结果');
-    }), [graph, editDirty, dialog, guard, toast]);
+  // 切回预览：草稿如果和 graph.dot 不一致（用户改了又没存），提示一下，
+  // 但不强制——预览只关心最新 graph.dot。
+  const enterPreview = useCallback(() => {
+    setMode('preview');
+  }, []);
 
-  // 另存：preview 存 graph.dot，edit 存 editText（同一按钮，取材随模式）
+  // 另存：存当前画板上的那份 dot（用户看到什么，存什么）。
+  // preview → graph.dot；edit 未改 → graph.dot；edit 改了 → editText。
   const doSave = useCallback(() =>
     guard(async () => {
-      const dot = mode === 'preview' ? graph?.dot : editText;
+      const dot = (mode === 'preview' || !editDirty) ? graph?.dot : editText;
       if (!dot?.trim()) { toast('没有可保存的 DOT 文本'); return; }
-      const file = await dialog({ title: '保存为 .dot 文件', input: true, value: DOT_FILE_DEFAULT, placeholder: 'cwd 相对路径（.dot/.gv）' });
+      const sourceLabel = (mode === 'preview' || !editDirty) ? '扫描结果' : '当前草稿';
+      const file = await dialog({
+        title: `保存 ${sourceLabel} 为 .dot 文件`,
+        input: true, value: DOT_FILE_DEFAULT, placeholder: 'cwd 相对路径（.dot/.gv）',
+      });
       if (!file) return;
       try {
         const r = await api('/api/deps/save', { method: 'POST', body: { file, dot } });
@@ -108,17 +117,20 @@ export default function DepsView() {
       } catch (e) {
         toast('保存失败: ' + e.message);
       }
-    }), [mode, graph, editText, dialog, guard, toast]);
+    }), [mode, editDirty, graph, editText, dialog, guard, toast]);
 
-  // 导入：前端直读，不落盘不过服务端
+  // 导入：前端直读，不落盘不过服务端。
+  // 导入后即视为新的"事实源"——进入 edit 模式显示该内容；用户再点"重新扫描"
+  // 会覆盖回 scan 源。
   const doImport = useCallback((e) => {
     const f = e.target.files?.[0];
     e.target.value = '';
     if (!f) return;
     f.text().then((t) => {
+      setMode('edit');
       setEditText(t);
       setEditDirty(false);
-      setMode('edit');
+      setEditSource('imported');
       toast(`已导入 ${f.name}（草稿态，点「另存 .dot」才会写文件）`);
     });
   }, []);
@@ -126,35 +138,43 @@ export default function DepsView() {
   const errorLines = editErrors.filter((e) => e.level === 'error');
   const warnCount = editErrors.length - errorLines.length;
 
+  // stats 行：两模式都显示；edit 模式额外标"草稿态"或"来源：xx"。
+  // 用 graph（最新事实源）而不是 editText——草稿可能语法错、stats 算不出来。
+  const statsLine = graph && (
+    <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+      {graph.stats.files} 文件 · {graph.stats.edges} 边 · {graph.stats.crossLayer} 跨层（红）
+      {mode === 'edit' && (
+        <>
+          {' · 来源：'}
+          {editDirty
+            ? <span style={{ color: 'var(--accent, #d97706)' }}>草稿（未保存）</span>
+            : (editSource === 'imported' ? '外部 .dot' : '扫描结果')}
+        </>
+      )}
+    </div>
+  );
+
   return (
     <div>
       <div className="toolbar" style={{ marginBottom: 12 }}>
-        <button className={'btn small' + (mode === 'preview' ? ' strong' : '')} onClick={() => setMode('preview')}>预览</button>
+        <button className={'btn small' + (mode === 'preview' ? ' strong' : '')} onClick={enterPreview}>预览</button>
         <button className={'btn small' + (mode === 'edit' ? ' strong' : '')} onClick={enterEdit}>编辑</button>
-        {mode === 'preview' ? (
-          <button className="btn small" onClick={doScan} disabled={loading}>{loading ? '扫描中…' : '重新扫描'}</button>
-        ) : (
-          <>
-            <button className="btn small ghost" onClick={doSyncFromScan} disabled={!graph}>回填扫描结果</button>
-            <label className="btn small ghost" style={{ cursor: 'pointer' }}>
-              导入 .dot
-              <input type="file" accept=".dot,.gv" hidden onChange={doImport} />
-            </label>
-          </>
-        )}
+        <button className="btn small" onClick={doScan} disabled={loading} title="重新扫描 src/">
+          {loading ? '扫描中…' : '重新扫描'}
+        </button>
+        <button className="btn small ghost" onClick={() => fileInputRef.current?.click()} disabled={mode !== 'edit'}>
+          导入 .dot
+        </button>
+        <input ref={fileInputRef} type="file" accept=".dot,.gv" hidden onChange={doImport} />
         <button className="btn small" onClick={doSave}>另存 .dot</button>
         <span style={{ display: 'inline-flex', gap: 4, marginLeft: 'auto', alignItems: 'center' }}>
           <button className="btn small ghost" onClick={() => setZoom((z) => Math.max(25, z - 25))}>−</button>
-          <button className="btn small ghost" onClick={() => setZoom(100)} title="适应宽度">{zoom}%</button>
+          <button className="btn small ghost" onClick={() => setZoom(100)} title="还原 100%">{zoom}%</button>
           <button className="btn small ghost" onClick={() => setZoom((z) => Math.min(400, z + 25))}>＋</button>
         </span>
       </div>
 
-      {mode === 'preview' && graph && (
-        <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-          {graph.stats.files} 文件 · {graph.stats.edges} 边 · {graph.stats.crossLayer} 跨层（红）
-        </div>
-      )}
+      {statsLine}
 
       {mode === 'edit' && (
         <>

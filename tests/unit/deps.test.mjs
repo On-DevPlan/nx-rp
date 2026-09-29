@@ -126,7 +126,7 @@ const re = /c\\/d/; const after = 3;`;
   assert.match(out, /const after = 3;/, '正则后面的代码保留');
 });
 
-test('depsToDot：分层着色 + 跨层统计 + stats', async () => {
+test('depsToDot：分层着色 + 跨层统计 + stats + source 标识', async () => {
   await seed('src/core/store.js', 'export {};\n');
   await seed('src/modules/doc/service.js', `import { s } from '../../core/store.js';\nexport {};\n`);
   const g = await (async () => {
@@ -136,6 +136,7 @@ test('depsToDot：分层着色 + 跨层统计 + stats', async () => {
   assert.equal(g.stats.files, 2);
   assert.equal(g.stats.edges, 1);
   assert.equal(g.stats.crossLayer, 1, 'core←modules 是跨层');
+  assert.equal(g.source, 'scan', '事实源标识：当前 depsToDot 永远产出 scan');
   assert.match(g.dot, /digraph nx_rp_dependencies \{/);
   assert.match(g.dot, /"modules\.doc\.service" -> "core\.store" \[color="#dc2626"\]/);
 });
@@ -205,4 +206,12 @@ test('loadDot：不存在 / 超限 / 二进制 拒绝', async () => {
     /超限/);
   await assert.rejects(() => loadDot({ file: join(tmp, 'bin.dot'), baseDir: tmp }),
     /二进制内容/);
+});
+
+test('deps.load 只声明 CLI、不再暴露 HTTP（HTML 视图导入走前端 FileReader）', async () => {
+  const { ACTIONS } = await import(pathToFileURL(join(ROOT, 'src', 'runtime', 'registry.js')).href);
+  const load = ACTIONS.find((a) => a.id === 'deps.load');
+  assert.ok(load, 'deps.load action 必须存在');
+  assert.equal(load.http, null, 'http 必须显式 null（CLI 专属）');
+  assert.deepEqual(load.cli, ['deps', 'load']);
 });
