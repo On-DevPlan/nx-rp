@@ -152,7 +152,12 @@ export default {
           lines.push('', `循环（${r.loops.length}）:`);
           for (const l of r.loops) {
             const max = l.maxIterations > 0 ? l.maxIterations : '∞';
-            lines.push(`  ${l.active === false ? '○' : '●'} ${l.id}  ${l.iteration}/${max}  ${l.completionPromise ? `<promise>${l.completionPromise}</promise>` : '（无承诺）'}  ${String(l.prompt).replace(/\s+/g, ' ').slice(0, 60)}`);
+            // 会话短码：与面板 SessionTag 同口径（两字段取先有值者）。
+            // 多会话并行时靠它一眼看出这条循环归谁——只说「无会话」而不显示，
+            // 等于把「布防了却不会被触发」的原因藏起来。
+            const sid = l.sessionId || l.claudeSessionId;
+            const who = sid ? `  [${String(sid).slice(0, 8)}${l.sessionId ? '' : '*'}]` : '  [无会话]';
+            lines.push(`  ${l.active === false ? '○' : '●'} ${l.id}  ${l.iteration}/${max}${who}  ${l.completionPromise ? `<promise>${l.completionPromise}</promise>` : '（无承诺）'}  ${String(l.prompt).replace(/\s+/g, ' ').slice(0, 50)}`);
           }
         } else {
           lines.push('', '循环: （无——用 nx-rp loop start "任务" 布防一个）');
