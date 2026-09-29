@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.9.1 / 2026-09-29
+
+- **skill：`--group` 安装机制 + 新增 `rp-loop` skill + 修两处参数解析静默错路径**（特性型）
+  - **修 1（`fix(skill)`）**：`skill install` 的位置参数是硬取 `argv[1]`、`--to` 靠 `indexOf`，
+    踩出两处**静默**错路径（均已实测复现）
+    - `skill install --force bogus` —— `argv[1]` 是 `--force` 被特判成「无名」，
+      于是静默装成默认的 `nx-rp`，用户敲的名字被完全忽略且不报错
+    - `skill install nx-rp --to --force` —— `--to` 缺值时静默回落到 `DEFAULT_SKILLS_DIR`
+      （真实 `~/.claude/skills`），并把 `--force` 当目录名在当前目录建出 `--force/`
+    - 解析集中到 `parseSkillArgs()`（install / get 共用）：已知 flag 缺值 / 空值 /
+      值以 `-` 开头一律报错；未知 `--x` 容忍跳过；位置参数过多报错
+  - **`--group` 安装**：`nx-rp skill install --group=rp-loop`
+    - `assets/groups.json` 做「group 名 → skill 名列表」别名表，**group 名 ≡ skill 名**
+      （一对一），`skills` 是数组为将来一对多留余地；路径恒由 `assets/<name>/` 推导，
+      清单只做聚合，不改目录结构
+    - 装载分层降级：清单缺失 / JSON 损坏 → 目录扫描兜底（不崩）；schema 错 → 抛错（不静默）
+    - `--group=<v>` / `--group <v>` 两种写法；缺值 / 空值 / 值以 `-` 开头报错；
+      与位置参数同时给报错（二者等价）
+    - 返回形状：**单 skill 与今天逐字节一致**（多一个 `group` 字段），多 skill 才走聚合
+      → `render` 四分支、`runGet` 消费点、既有测试全都不用动
+    - 新增 `skill groups` 子命令（带 `source` 暴露「清单驱动 / 降级目录扫描」）
+    - `get --group`：只允许单选；给了 `--group` 时位置参数左移一位
+    - **无参数 `skill install` 仍装 `nx-rp`**（原命令行为不变）
+  - **新增 `rp-loop` skill**（`assets/rp-loop/`，5 文件）
+    - 把官方 Claude Code 插件 **ralph-loop** 的机制与哲学融进 nx-rp，教 agent 用
+      **nx-rp 自己的 `loop` 命令**（不是官方插件的 slash 命令）
+    - `SKILL.md`：三条铁律（布防前确认任务/可验证判据/轮次上限、完成承诺只在为真时输出、
+      不设承诺则只能靠上限收口）+ 六条命令表 + 与官方插件的差异对照
+      + 什么时候该用 / 不该用 + 排障速查
+    - `description` 带**排除句**（一次性任务 / 需人工判断 / 判据说不清）——
+      这是唯一一个「误触发会让会话被 Stop hook 拦住」的 skill，误用代价高
+    - references：`loop-commands`（命令语义 + Stop hook 判决分支表 + 会话隔离算法）、
+      `loop-prompt-craft`（prompt / 承诺词 / 上限怎么写，融合 ralph best practices）、
+      `loop-troubleshooting`（表格化排障，含与官方插件并存的检查）、
+      `ralph-philosophy`（原理、四条原则、nx-rp 的 5 处改造）
+    - 内容严格只用 nx-rp 命令名，不抄官方插件的实现细节（避免把 agent 引向错误用法）
+  - 交叉引用：`assets/nx-rp/SKILL.md` 补上 `--group` 与新 skill 的入口（此前完全没提 loop 模块）
+  - smoke 新增交叉一致性断言：清单里每个 skill 的 `assets/<name>/SKILL.md` 必须存在，
+    且**每个 group 名本身可当位置参数**（把「group 即 skill 名」这条决策固化成断言）
+  - 测试：skill-group 23 条 + skill-get 28 条（含 5 条回归），全量 192 条
+
 ## 0.9.0 / 2026-09-29
 
 - **loop：自引用循环（Ralph 技术）——Stop hook + 项目级开关 + Web 面板**（特性型，新模块）

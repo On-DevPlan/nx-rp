@@ -88,9 +88,18 @@ nx-rp skill get [name] [ref]            # 输出 SKILL.md（默认）/ reference
                                        #   内容复制到自己可访问路径后续直接调用。
                                        #   ref 接受 `references/foo.md` / 裸名 `foo`
                                        #   （自动查 references/foo.md）/ `./foo.md`。
+nx-rp skill install --group=rp-loop     # 按 group 装另一个内置 skill（group 名即 skill 名，
+                                       #   等价于 `skill install rp-loop`）
+nx-rp skill groups                     # 看有哪些内置 group
 ```
 
 加 `--json` 得机器可读输出。
+
+**另有 `rp-loop` skill**（`nx-rp skill install --group=rp-loop`）：
+教 agent 用 `nx-rp loop` 做**自引用循环**（Ralph 技术）——把同一条提示词反复灌回当前会话，
+直到输出完成承诺或达到轮次上限。适用于"跑到测试全绿""无人值守把它做完"这类
+有明确验收信号的任务。完整用法（`loop on/start/status/cancel/log`、prompt 怎么写、
+与官方 ralph-loop 插件的差异、排障）见该 skill。
 
 ## agent 怎么用依赖图
 

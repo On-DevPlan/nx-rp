@@ -84,6 +84,51 @@ test('smoke: parseServeArgs 解析（位置端口 / --port 两种形态 / --stor
   assert.throws(() => parseServeArgs(['--port', 'abc']), /期望数字/);
 });
 
+test('smoke: 内置 skill 资产与 groups.json 交叉一致', async () => {
+  const { readFileSync, existsSync } = await import('node:fs');
+  const assets = join(ROOT, 'assets');
+  const groupsFile = join(assets, 'groups.json');
+
+  // groups.json 必须存在且可 parse（它是 --group 的事实源）
+  assert.ok(existsSync(groupsFile), 'assets/groups.json 缺失');
+  const data = JSON.parse(readFileSync(groupsFile, 'utf8'));
+  assert.ok(data.groups && typeof data.groups === 'object', 'groups.json 应有 groups 对象');
+
+  for (const [name, entry] of Object.entries(data.groups)) {
+    assert.ok(Array.isArray(entry.skills) && entry.skills.length > 0, `group ${name} 的 skills 应为非空数组`);
+    for (const skill of entry.skills) {
+      // 清单声明的每个 skill 都必须有真实资产（防「声明了但没打进包」）
+      const md = join(assets, skill, 'SKILL.md');
+      assert.ok(existsSync(md), `group ${name} 声明的 skill「${skill}」缺 ${md}`);
+      const head = readFileSync(md, 'utf8').slice(0, 400);
+      assert.match(head, /^---[\s\S]*\bname:\s*\S+/m, `${skill}/SKILL.md frontmatter 缺 name`);
+    }
+    // ★「group 即 skill 名」是用户拍板的决策，固化成断言：
+    //   每个 group 名本身必须能当位置参数直接用。将来若出现「聚合型 group（无同名 skill）」，
+    //   这条会失败，正好逼着那次改动显式面对「用户直觉失效」这件事。
+    assert.ok(entry.skills.includes(name),
+      `group「${name}」不等于任何一个 skill 名——「group 名即 skill 名」的约定被破坏`);
+  }
+});
+
+test('smoke: rp-loop skill 就位且 frontmatter 正确', async () => {
+  const { readFileSync, existsSync } = await import('node:fs');
+  const skillDir = join(ROOT, 'assets', 'rp-loop');
+  const md = join(skillDir, 'SKILL.md');
+  assert.ok(existsSync(md), 'assets/rp-loop/SKILL.md 缺失');
+  const content = readFileSync(md, 'utf8');
+  assert.match(content, /^---\nname: rp-loop\n/, 'frontmatter 的 name 必须是 rp-loop');
+  // description 必须带排除句——这是唯一一个「误触发会拦住会话」的 skill
+  assert.match(content, /不适用于/, 'description 必须写明不适用的场景（防误触发）');
+  // 四篇 references 都要在
+  for (const ref of ['loop-commands', 'loop-prompt-craft', 'loop-troubleshooting', 'ralph-philosophy']) {
+    assert.ok(existsSync(join(skillDir, 'references', `${ref}.md`)), `缺 references/${ref}.md`);
+  }
+  // 内容必须讲 nx-rp 自己的命令，不能混入官方插件的 slash 命令
+  assert.match(content, /nx-rp loop start/, 'SKILL.md 应指导用 nx-rp 的 loop 命令');
+  assert.doesNotMatch(content, /\/ralph-loop\s+"/, '不应出现官方插件的 slash 用法（会误导 agent）');
+});
+
 test('smoke: hook status/log 只读路径可用（临时目录重定向，不碰真实数据）', async () => {
   const tmp = await mkdtemp(join(tmpdir(), 'nxrp-smoke-'));
   try {

@@ -29,7 +29,11 @@ npx nx-rp routes              # 看 CLI ↔ Web 路由对照
 nx-rp serve                  启动 Web 面板（默认 :7820；端口上已有 nx-rp 面板则
                              登记当前目录到「最近目录」并直接打开它，不重复起进程）
 nx-rp recents                最近使用的工作目录（面板可一键切换数据范围）
-nx-rp skill install          装内置 skill 到 ~/.claude/skills
+nx-rp skill install          装内置 skill 到 ~/.claude/skills（默认装 nx-rp）
+nx-rp skill install --group=rp-loop   按 group 装另一个内置 skill
+                             （group 名即 skill 名，等价 `skill install rp-loop`；
+                             `--group` 与位置参数二选一，同时给会报错）
+nx-rp skill groups           列出内置 group（含降级到目录扫描时的标注）
 nx-rp skill get              把内置 skill 文档（SKILL.md / references/*）输出到 stdout；
                              同时按 install 既有逻辑装到 ~/.claude/skills——给不直接
                              识别 ~/.claude/skills 的 agent 一条命令拿全上下文
