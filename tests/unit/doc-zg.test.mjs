@@ -101,7 +101,7 @@ test('doc exportDocs：store 文档 → KB md 文件镜像（含 frontmatter）�
 
     const target = mdFiles.find((f) => f.includes(d1.id));
     const content = await readFile(join(r1.kbDir, target), 'utf8');
-    assert.match(content, /^---\ntitle: /);
+    assert.match(content, /^---\r?\ntitle: /); // 行尾随平台/检出变化，不断言 LF
     assert.match(content, /tags: \["hook", "设计"\]/);
     assert.match(content, /外科手术式写入/);
 

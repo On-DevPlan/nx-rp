@@ -117,7 +117,8 @@ test('smoke: rp-loop skill 就位且 frontmatter 正确', async () => {
   const md = join(skillDir, 'SKILL.md');
   assert.ok(existsSync(md), 'assets/rp-loop/SKILL.md 缺失');
   const content = readFileSync(md, 'utf8');
-  assert.match(content, /^---\nname: rp-loop\n/, 'frontmatter 的 name 必须是 rp-loop');
+  // 行尾随检出变化（core.autocrlf 下 Windows 是 CRLF）——断言不该依赖它
+  assert.match(content, /^---\r?\nname: rp-loop\r?\n/, 'frontmatter 的 name 必须是 rp-loop');
   // description 必须带排除句——这是唯一一个「误触发会拦住会话」的 skill
   assert.match(content, /不适用于/, 'description 必须写明不适用的场景（防误触发）');
   // 四篇 references 都要在

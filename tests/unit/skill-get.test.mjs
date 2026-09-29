@@ -102,7 +102,7 @@ test('B1 get 缺省名 → ref="SKILL.md", content 含 frontmatter', async () =>
   const r = await skill.run(['get', ...toArg]);
   assert.equal(r.skillName, 'nx-rp');
   assert.equal(r.ref, 'SKILL.md');
-  assert.match(r.content, /^---\nname: nx-rp/);
+  assert.match(r.content, /^---\r?\nname: nx-rp/);
   assert.ok(r.contentBytes > 0);
   assert.equal(r.install.installed || r.install.skipped, true);
 });
@@ -130,7 +130,7 @@ test('B5 get ./SKILL.md → 等价缺省（label 是 "./SKILL.md"，因为 ref �
   const skill = await loadSkill();
   const r = await skill.run(['get', 'nx-rp', './SKILL.md', ...toArg]);
   assert.equal(r.ref, './SKILL.md');
-  assert.match(r.content, /^---\nname: nx-rp/);
+  assert.match(r.content, /^---\r?\nname: nx-rp/);
 });
 
 test('B6 get ../foo.md → 抛 "不允许包含 .."', async () => {
@@ -195,7 +195,7 @@ test('B10 get 时 dst 已有不同内容 → content 仍打印 + install conflic
   await writeFile(join(tmp, 'nx-rp', 'SKILL.md'), '# tampered\n', 'utf8');
   const r = await skill.run(['get', '--to', tmp]);
   // content 不受 install 状态影响（永远给文档）
-  assert.match(r.content, /^---\nname: nx-rp/);
+  assert.match(r.content, /^---\r?\nname: nx-rp/);
   // install 状态如实返回 conflict
   assert.equal(r.install.status, 'conflict');
   assert.ok(r.install.files.includes('SKILL.md'));
@@ -217,7 +217,9 @@ test('C1 get 默认渲染顺序：prefix → doc → install summary', async () 
   const out = skill.render(r);
   const prefixIdx = out.indexOf('# === nx-rp skill context ===');
   const sentinelIdx = out.indexOf('# --- begin skill content');
-  const docIdx = out.indexOf('---\nname: nx-rp');
+  // 文档是磁盘读来的，行尾随检出变化（core.autocrlf 下 Windows 是 CRLF）——
+  // 断言不该依赖它，故用 /^---\r?\n/ 两端通吃。
+  const docIdx = out.search(/^---\r?\nname: nx-rp/m);
   const installHeaderIdx = out.indexOf('-- install 状态 --');
   const installLineIdx = out.indexOf('已安装:') === -1 ? out.indexOf('已是最新:') : out.indexOf('已安装:');
   assert.ok(prefixIdx >= 0 && prefixIdx < sentinelIdx, 'prefix header 在 sentinel 前');
