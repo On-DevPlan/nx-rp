@@ -16,7 +16,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { CLAUDE_SETTINGS_PATH, SNAPSHOTS_DIR, LOOPS_DIR, loopsFileFor, loopsLogFileFor, cwdDir } from '../../core/paths.js';
 import { appendOwnGroup, removeOwnGroups, toggleSettings, findOwnGroups, ownsGroup, readSettings } from '../../core/claude-settings.js';
-import { readStdin, parseHookEvent, deriveSessionId } from '../../core/hook-io.js';
+import { readStdin, parseHookEvent, deriveSessionId, isSubagentEvent } from '../../core/hook-io.js';
 import { invalidInput } from '../../core/errors.js';
 
 // 我们那条 hook entry 的指纹——on/off 靠 marker 在 hooks 数组里认亲。
@@ -407,11 +407,22 @@ export async function updateLoop({ id, prompt, maxIterations, completionPromise,
   }
 
   const changed = [];
-  // 改绑会话：布防时绑错了（比如绑到了运行 nx-rp 的那个进程的会话）时的补救。
-  // 传空串 = 清掉显式绑定，退回只用 claudeSessionId。
+  // 改绑会话：布防时绑错了（比如 env 捕获到了执行进程的会话而非目标会话）时的补救。
+  //
+  // 语义（必须两步一起做，缺一就是「改绑不彻底」）：
+  //   1. 写 sessionId = 显式值
+  //   2. **清掉 claudeSessionId** —— 它是启动时 env 捕获的残留，代表「执行进程的
+  //      会话」而非用户意图。改绑场景恰恰是「env 绑错了」，留着它，旧会话的
+  //      Stop 事件仍会通过 claudeSessionId 匹配命中（真实踩过：改绑后循环
+  //      照旧灌进错误会话，iteration 还在涨）。
+  // 传空串 = 清掉显式绑定。此时 claudeSessionId 保留——那是唯一剩下的身份。
   if (sessionId !== undefined) {
     const next = sessionId ? String(sessionId) : null;
     if (next !== loop.sessionId) { loop.sessionId = next; changed.push('sessionId'); }
+    if (next !== null && loop.claudeSessionId && loop.claudeSessionId !== next) {
+      loop.claudeSessionId = null;
+      if (!changed.includes('sessionId')) changed.push('sessionId');
+    }
   }
   if (typeof prompt === 'string' && prompt.trim() && prompt !== loop.prompt) {
     // 改任务描述前先把**旧版**归档，再递增版号——这样审计日志里的 promptVersion
@@ -618,6 +629,18 @@ async function stopHookInner(raw) {
 
   // 事件名有值但不是 Stop → 本 hook 被挂错了事件，放行（防御性）
   if (event.hook_event_name && event.hook_event_name !== 'Stop' && event.hook_event_name !== 'SubagentStop') {
+    return null;
+  }
+
+  // 子 agent 的 stop：**放行，绝不认领**。
+  //
+  // 子 agent 与主 agent 共享 session_id（实测），而 pickLoop 只认 session_id——
+  // 不加这道闸，子 agent 的回合边界会被当成主会话的，凭空消耗一个轮次。
+  // 今天提示词是常量，代价只是重复灌一次；一旦 loop 有了 stages，被烧掉的就是一个
+  // **阶段**——而那种失败没有任何观测面（轮次照常递增、审计看不出异常）。
+  //
+  // 为什么放在读状态、抢锁之前：不该发生的事不要留痕——不占锁、不写状态、不写审计。
+  if (event.hook_event_name === 'SubagentStop' || isSubagentEvent(event)) {
     return null;
   }
 

@@ -267,6 +267,73 @@ test('Stop hook：旧版遗留的无名 loop 不被认领（收养回退已删�
   assert.equal(l.active, true, '不该被改动');
 });
 
+// 带子 agent 标识的 Stop 事件。子 agent 与主 agent **共享 session_id**（实测），
+// 所以只给 sessionId 是不够的——必须带上 agent 标识才能与主 agent 区分开。
+function subagentStopEvent({ cwd, transcriptPath, sessionId = 'S1', key = 'agent_id' }) {
+  return JSON.stringify({
+    hook_event_name: 'Stop',
+    session_id: sessionId,
+    [key]: 'a91e478bdb60245ab',
+    transcript_path: transcriptPath,
+    cwd,
+    stop_hook_active: false,
+  });
+}
+
+test('Stop hook：子 agent 事件不认领——不推进轮次、不写状态、不写审计', async () => {
+  const { startLoop, stopHookRaw, listLoops } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', completionPromise: 'DONE', maxIterations: 5, sessionId: 'S1', cwd });
+
+  const p = await writeTranscript('sub.jsonl', [assistantLine('子 agent 随口说了一句 <promise>DONE</promise>')]);
+  const before = (await listLoops({ cwd })).find((l) => l.active);
+
+  // 两种拼写都要拦住（hook payload 里叫什么没实测过）
+  for (const key of ['agent_id', 'agentId']) {
+    const out = await stopHookRaw(subagentStopEvent({ cwd, transcriptPath: p, sessionId: 'S1', key }));
+    assert.equal(out, null, `带上 ${key} 的子 agent 事件必须放行`);
+  }
+
+  const after = (await listLoops({ cwd })).find((l) => l.id === before.id);
+  assert.equal(after.iteration, before.iteration, '轮次不该被子 agent 推进');
+  assert.equal(after.active, true, '循环不该被子 agent 提前判完成');
+  assert.equal(after.endReason, undefined, '不该记 endReason');
+  assert.equal(after.sessionId, 'S1', '状态不该被改写');
+  // 审计无痕。**关键**：拒绝要发生在任何状态写入**之前**——一旦先认领再发现是子 agent，
+  // 轮次就已经烧掉了。所以这里断言的是「什么都没发生过」，不是「返回了 null」。
+  const logFile = pathsMod.loopsLogFileFor(cwd).file;
+  const auditCount = existsSync(logFile)
+    ? (await readFile(logFile, 'utf8')).split('\n').filter(Boolean).length
+    : 0;
+  assert.equal(auditCount, 0, '子 agent 事件不该留下审计记录');
+});
+
+test('Stop hook：hook_event_name=SubagentStop 直接放行（即使没有 agent 标识字段）', async () => {
+  const { startLoop, stopHookRaw, listLoops } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', completionPromise: 'DONE', maxIterations: 5, sessionId: 'S1', cwd });
+  const p = await writeTranscript('sub2.jsonl', [assistantLine('说完了 <promise>DONE</promise>')]);
+  const payload = JSON.stringify({
+    hook_event_name: 'SubagentStop', session_id: 'S1', transcript_path: p, cwd, stop_hook_active: false,
+  });
+  assert.equal(await stopHookRaw(payload), null);
+  const [l] = await listLoops({ cwd });
+  assert.equal(l.active, true, 'SubagentStop 不该判完成');
+});
+
+test('Stop hook：主 agent 事件（无 agent 标识）照常认领——防线不能误伤主路径', async () => {
+  const { startLoop, stopHookRaw, listLoops } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', completionPromise: 'DONE', maxIterations: 5, sessionId: 'S1', cwd });
+  const p = await writeTranscript('main.jsonl', [assistantLine('真做完了 <promise>DONE</promise>')]);
+  // 与上面「子 agent」用例的唯一差别：不带 agent 标识字段
+  const out = await stopHookRaw(stopEvent({ cwd, transcriptPath: p, sessionId: 'S1' }));
+  assert.ok(out && out.systemMessage.includes('完成'), '主 agent 命中承诺仍要正常收口: ' + JSON.stringify(out));
+  const [l] = await listLoops({ cwd });
+  assert.equal(l.active, false, '主 agent 该判定完成');
+  assert.equal(l.endReason, 'promise');
+});
+
 test('pickLoop：无 sid 时返回 null（不再靠唯一候选兜底）', async () => {
   const { pickLoop } = await import(serviceUrl());
   assert.equal(pickLoop([{ id: 'a', active: true }], null, null), null, '两个 sid 都空 → 放行');
@@ -748,4 +815,34 @@ test('prompt 版本：老记录（无该字段）按 v1 读，不崩', async () 
   await stopHookRaw(stopEvent({ cwd, transcriptPath: p, sessionId: 'S1' }));
   const [log] = await listLoopLog({ cwd });
   assert.equal(log.promptVersion, 1, '老记录视为 v1');
+});
+
+test('updateLoop 改绑：必须同时清掉 env 残留的 claudeSessionId（改绑不彻底 = 没改）', async () => {
+  const { startLoop, updateLoop } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  // 复刻真实事故：布防时两个会话字段都写成了同一个错误会话（env 捕获）
+  const { id } = await startLoop({ prompt: '任务', sessionId: 'WRONG', cwd });
+  const { file } = pathsMod.loopsFileFor(cwd);
+  const state = JSON.parse(await readFile(file, 'utf8'));
+  state.loops.find((l) => l.id === id).claudeSessionId = 'WRONG';
+  await writeFile(file, JSON.stringify(state, null, 2), 'utf8');
+
+  // 改绑到 RIGHT
+  await updateLoop({ id, sessionId: 'RIGHT', cwd });
+  const after = JSON.parse(await readFile(file, 'utf8'));
+  const l = after.loops.find((x) => x.id === id);
+  assert.equal(l.sessionId, 'RIGHT');
+  assert.equal(l.claudeSessionId, null, 'env 残留必须清掉——否则 WRONG 会话的 Stop 事件仍能命中');
+
+  // 传空串（清显式绑定）时保留 claudeSessionId——那是唯一剩下的身份
+  const { startLoop: s2 } = await import(serviceUrl());
+  const { id: id2 } = await s2({ prompt: '任务2', sessionId: 'EX', cwd });
+  const st2 = JSON.parse(await readFile(file, 'utf8'));
+  st2.loops.find((l2) => l2.id === id2).claudeSessionId = 'ENV';
+  await writeFile(file, JSON.stringify(st2, null, 2), 'utf8');
+  await updateLoop({ id: id2, sessionId: '', cwd });
+  const after2 = JSON.parse(await readFile(file, 'utf8'));
+  const l2 = after2.loops.find((x) => x.id === id2);
+  assert.equal(l2.sessionId, null);
+  assert.equal(l2.claudeSessionId, 'ENV', '清显式绑定时 env 身份要保留');
 });

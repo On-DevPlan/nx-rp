@@ -126,6 +126,37 @@ test('parseHookEvent：坏 JSON 降级为抢救对象；非对象 JSON 降级 {}
   assert.equal(parseHookEvent('{"prompt":"hi"}').prompt, 'hi');
 });
 
+test('isSubagentEvent：认 agent_id / agentId 两种写法；主 agent 事件与垃圾输入都不误判', async () => {
+  const { isSubagentEvent } = await import(hookIoUrl());
+  // 子 agent：两种拼写都认（hook payload 里叫什么没实测过——子 agent 的 stop 根本
+  // 不投递，拿不到真实 payload，所以不赌某一种）
+  assert.equal(isSubagentEvent({ agent_id: 'a91e478b' }), true);
+  assert.equal(isSubagentEvent({ agentId: 'a91e478b' }), true);
+  // 字段在但为空 = 没有子 agent 身份 → 不是子 agent（空串/空白/null 都不算）
+  assert.equal(isSubagentEvent({ agent_id: '' }), false);
+  assert.equal(isSubagentEvent({ agentId: '   ' }), false);
+  assert.equal(isSubagentEvent({ agentId: null }), false);
+  assert.equal(isSubagentEvent({ agent_id: undefined }), false);
+  // 主 agent 的普通事件：不能因为 payload 里有别的字段就误判
+  assert.equal(isSubagentEvent({ session_id: 'S1', cwd: 'D:/x', hook_event_name: 'Stop' }), false);
+  assert.equal(isSubagentEvent({ tool_name: 'Skill', agentType: 'general-purpose' }), false, 'agentType 不是子 agent 标识，不该误判');
+  // 坏输入不抛
+  assert.equal(isSubagentEvent(null), false);
+  assert.equal(isSubagentEvent(undefined), false);
+  assert.equal(isSubagentEvent('nope'), false);
+  assert.equal(isSubagentEvent({}), false);
+});
+
+test('salvageFields：半截 JSON 里也救回 agent_id（子 agent 判定不能因坏 JSON 失守）', async () => {
+  const { salvageFields } = await import(hookIoUrl());
+  const half = '{"session_id":"s1","agent_id":"a91e478b","cwd":"D:/x","prompt":"半';
+  const got = salvageFields(half);
+  assert.equal(got.agent_id, 'a91e478b', '子 agent 身份救不回来，防线就出缺口');
+  assert.equal(got.session_id, 's1');
+  // 转义安全：与 session_id 走同一套 JSON.parse 解码，不裸拼
+  assert.equal(salvageFields('{"agentId":"a\\"b"}').agentId, 'a"b');
+});
+
 test('deriveSessionId：payload 优先，env 次之，pid+cwd 兜底', async () => {
   const { deriveSessionId } = await import(hookIoUrl());
   assert.equal(deriveSessionId({ session_id: 'a' }), 'a');
