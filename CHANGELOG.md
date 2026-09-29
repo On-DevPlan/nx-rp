@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.9.3 / 2026-09-29
+
+- **loop 面板：审计日志可展开看成果 + 编辑改弹窗 + 修 CI 测试隔离**（修复型）
+  - **修：CI 上 2 个单测失败**（v0.9.2 发布为此中断）
+    - `startLoop：缺 prompt 抛 INVALID_INPUT；maxIterations 0 = 无限` 与
+      `cancelLoop：标记 inactive 但保留记录` 在 Linux CI 上挂——它们调
+      `startLoop({ prompt, cwd })` 不传 sessionId，而 0.9.2 新加的「拿不到会话身份
+      就报错」在 CI（无 `CLAUDE_CODE_SESSION_ID`）上抛错。
+    - 本地全绿是因为在 Claude Code 里跑、env 有值——**测试依赖了宿主环境**。
+      修法：`beforeEach` 抹掉会话 env（需要它的用例自己设置），两个用例显式传 sessionId。
+  - **审计日志点开看完整成果**
+    - 列表行只放一句摘要（`promise=… · 解析到 N 字`），新增「成果」按钮弹窗看全文——
+      那一轮 Agent 到底做了什么，之前只看得到一句。
+    - `lastText` 存储上限由 200 字提到 4000 字（`AUDIT_TEXT_CAP`）：200 字没法复盘，
+      全文又会把 append-only 的 JSONL 撑大，4000 是折中；面板在超出时明示「仅前 N 字」。
+    - 修：`promise-hit` 与 `max-iterations` 两个**终止分支**的审计没记 `lastText`——
+      而终止轮次恰恰最值得复盘。transcript 读取提到所有判定分支之前，三处共用同一份。
+  - **编辑改弹窗**（原为展开式卡片）
+    - 空间大得多：任务描述从 70px 小框变为 200px、可见全文（实测 1580 字的任务完整展示），
+      并展示当前状态 / 开始时间 / 最后触发供对照。
+    - 保存 / 放弃在弹窗底部，语义不变（点保存才提交）。
+  - 全量 200 单测 + 7 smoke 全绿；lint / build 通过；面板两个弹窗均浏览器实测
+
 ## 0.9.2 / 2026-09-29
 
 - **loop 面板：会话归属可见可选 + 循环可编辑可删除 + 拒绝匿名循环**（特性型）

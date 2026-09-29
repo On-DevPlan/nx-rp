@@ -32,6 +32,15 @@ const TRANSCRIPT_TAIL_LINES = 100;
 // 100 行的上限在极端情况下按字节兜底。
 const TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024;
 
+// 审计日志里存「该轮解析到的文本」的上限。
+//
+// 存全文的代价：这条文本会随每轮 append 进 JSONL，长会话能把它撑得很大
+// （rails 的教训——日志无轮转）。存太短又没法复盘（面板上只能看到一句摘要）。
+// 4000 字是折中：通常够看懂 Agent 那一轮做了什么，也不会让日志膨胀失控。
+// 面板把 200 字当摘要、点开看这个上限内的全文；服务端另记 lastTextChars
+// 说明真实长度，超出时面板明示「已截断」。
+const AUDIT_TEXT_CAP = 4000;
+
 // ─── hook 配置（项目级） ──────────────────────────────────────────────
 
 function hookEntry() {
@@ -594,6 +603,20 @@ async function stopHookInner(raw) {
     // 「唯一候选」判定，也便于面板看出它归属哪个会话。
     if (!loop.sessionId && payloadSession) loop.sessionId = payloadSession;
 
+    // 提取最后一条 assistant 文本 → 找 promise。
+    // transcript_path 优先取解析后的字段，坏了再从原始 payload 抢救。
+    //
+    // 放在所有判定分支**之前**：终止分支（超限 / 命中）也要把这一轮的成果记进
+    // 审计——那恰恰是最值得复盘的一轮。三个分支共用这一份 text。
+    const transcriptPath = (typeof event.transcript_path === 'string' && event.transcript_path)
+      || salvageTranscriptPath(raw);
+    const text = await readLastAssistantText(transcriptPath);
+    const promise = extractPromise(text);
+    const textFields = {
+      lastText: text === null ? null : text.replace(/\s+/g, ' ').slice(0, AUDIT_TEXT_CAP),
+      lastTextChars: text === null ? null : text.length,
+    };
+
     // 分支 3：迭代超限
     const max = Number(loop.maxIterations) || 0;
     if (max > 0 && Number(loop.iteration) >= max) {
@@ -602,16 +625,10 @@ async function stopHookInner(raw) {
       loop.endedAt = new Date().toISOString();
       loop.lastFiredAt = loop.endedAt;
       await writeState(target.file, state);
-      await audit(cwd, { loopId: loop.id, iteration: loop.iteration, decision: 'max-iterations', sessionId });
+      await audit(cwd, { loopId: loop.id, iteration: loop.iteration, decision: 'max-iterations', sessionId, ...textFields });
       return { systemMessage: `🛑 Loop ${loop.id}: 已达上限 ${max} 轮，循环停止。` };
     }
 
-    // 提取最后一条 assistant 文本 → 找 promise。
-    // transcript_path 优先取解析后的字段，坏了再从原始 payload 抢救。
-    const transcriptPath = (typeof event.transcript_path === 'string' && event.transcript_path)
-      || salvageTranscriptPath(raw);
-    const text = await readLastAssistantText(transcriptPath);
-    const promise = extractPromise(text);
     const expected = loop.completionPromise;
 
     // 分支 4：promise 命中（字面量精确匹配，与 ralph 的 `=` 比较一致，承诺词里的
@@ -622,7 +639,7 @@ async function stopHookInner(raw) {
       loop.endedAt = new Date().toISOString();
       loop.lastFiredAt = loop.endedAt;
       await writeState(target.file, state);
-      await audit(cwd, { loopId: loop.id, iteration: loop.iteration, decision: 'promise-hit', promise, sessionId });
+      await audit(cwd, { loopId: loop.id, iteration: loop.iteration, decision: 'promise-hit', promise, sessionId, ...textFields });
       return { systemMessage: `✅ Loop ${loop.id}: 检测到 <promise>${expected}</promise>，循环完成。` };
     }
 
@@ -638,9 +655,9 @@ async function stopHookInner(raw) {
       : '未设完成承诺，循环只能靠轮次上限收口';
     await audit(cwd, {
       loopId: loop.id, iteration: next, decision: 'continue', promise,
-      // 记录文本摘要：面板上一眼看出 transcript 解析是否正常（解析失效时这里是 null）
-      lastText: text === null ? null : text.replace(/\s+/g, ' ').slice(0, 200),
-      lastTextChars: text === null ? null : text.length,
+      // textFields 同时记了摘要文本与真实字数：面板上字数能一眼看出 transcript
+      // 解析是否正常（解析失效时两者都是 null）
+      ...textFields,
       sessionId,
     });
     return {

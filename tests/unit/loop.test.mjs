@@ -17,6 +17,7 @@ const ROOT = join(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:
 let tmp;
 let loopsDir;
 let snapshotsDir;
+let savedSessEnv;
 
 const pathsMod = await import(pathToFileURL(join(ROOT, 'src', 'core', 'paths.js')).href);
 const serviceUrl = () => pathToFileURL(join(ROOT, 'src', 'modules', 'loop', 'service.js')).href;
@@ -32,9 +33,22 @@ beforeEach(async () => {
     loopsDir,
     snapshotsDir,
   });
+  // 会话 env 隔离：测试不该依赖「碰巧在哪个宿主里跑」。
+  // 曾经因此翻车——startLoop 新加的身份校验在本地（Claude Code 里跑，env 有值）
+  // 全绿，到 CI（无此 env）就红了。默认抹掉，需要它的用例自己设置。
+  savedSessEnv = {
+    a: process.env.CLAUDE_CODE_SESSION_ID,
+    b: process.env.CLAUDE_SESSION_ID,
+  };
+  delete process.env.CLAUDE_CODE_SESSION_ID;
+  delete process.env.CLAUDE_SESSION_ID;
 });
 
 afterEach(async () => {
+  if (savedSessEnv?.a !== undefined) process.env.CLAUDE_CODE_SESSION_ID = savedSessEnv.a;
+  else delete process.env.CLAUDE_CODE_SESSION_ID;
+  if (savedSessEnv?.b !== undefined) process.env.CLAUDE_SESSION_ID = savedSessEnv.b;
+  else delete process.env.CLAUDE_SESSION_ID;
   pathsMod.setHookPaths({
     settingsPath: join(process.env.USERPROFILE || process.env.HOME, '.claude', 'settings.json'),
     promptsDir: join(pathsMod.APP_DIR, 'prompts'),
@@ -390,7 +404,7 @@ test('startLoop：缺 prompt 抛 INVALID_INPUT；maxIterations 0 = 无限', asyn
   const { startLoop, listLoops } = await import(serviceUrl());
   const cwd = join(tmp, 'proj');
   await assert.rejects(() => startLoop({ prompt: '   ', cwd }), (e) => e.code === 'INVALID_INPUT');
-  await startLoop({ prompt: '无限循环', maxIterations: 0, cwd });
+  await startLoop({ prompt: '无限循环', maxIterations: 0, sessionId: 'S1', cwd });
   const [l] = await listLoops({ cwd });
   assert.equal(l.maxIterations, 0, '显式 0 表示无限，不能回落成 20');
 });
@@ -398,8 +412,8 @@ test('startLoop：缺 prompt 抛 INVALID_INPUT；maxIterations 0 = 无限', asyn
 test('cancelLoop：标记 inactive 但保留记录', async () => {
   const { startLoop, cancelLoop, listLoops } = await import(serviceUrl());
   const cwd = join(tmp, 'proj');
-  await startLoop({ prompt: '任务1', cwd });
-  await startLoop({ prompt: '任务2', cwd });
+  await startLoop({ prompt: '任务1', sessionId: 'S1', cwd });
+  await startLoop({ prompt: '任务2', sessionId: 'S1', cwd });
   const r = await cancelLoop({ id: 'loop-1', cwd });
   assert.equal(r.cancelled, 1);
   const loops = await listLoops({ cwd });

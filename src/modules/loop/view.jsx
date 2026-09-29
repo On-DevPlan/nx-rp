@@ -6,9 +6,9 @@
 // 与另两个 hook 模块的**本质差异**：开关写的是**项目级**配置
 // （.claude/settings.local.json），不是全局 ~/.claude/settings.json——
 // 只有配了 hook 的项目才会被拦截退出，语义与 ralph-loop 一致。
-import { Fragment, useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '../../web/frontend/api/client.js';
-import { useDialog, useGuard, useToast, Copyable } from '../../web/frontend/components/ui.jsx';
+import { useDialog, useGuard, useToast, Copyable, Modal } from '../../web/frontend/components/ui.jsx';
 import { CliHints } from '../../web/frontend/components/CliHints.jsx';
 import { useStore } from '../../web/frontend/store.jsx';
 import ManualAddCard from '../../web/frontend/components/ManualAddCard.jsx';
@@ -64,6 +64,8 @@ export default function LoopView() {
   // 编辑态：editing = {id}；draft 是那一条的可编辑副本（点「保存」才提交）
   const [editing, setEditing] = useState(null);
   const [draft, setDraft] = useState({ prompt: '', maxIterations: '20', completionPromise: '', sessionId: '' });
+  // 日志详情：审计行里的「成果」被截断成一句摘要，点开看完整文本
+  const [viewLog, setViewLog] = useState(null);
   const guard = useGuard();
   const toast = useToast();
   const { dialog, node: dialogNode } = useDialog();
@@ -340,8 +342,7 @@ export default function LoopView() {
             const max = l.maxIterations > 0 ? l.maxIterations : 0;
             const pct = max > 0 ? Math.min(100, Math.round((l.iteration / max) * 100)) : 0;
             return (
-              <Fragment key={l.id}>
-              <div className="row wrap">
+              <div key={l.id} className="row wrap">
                 <div style={{ width: 18, flexShrink: 0, fontSize: 13 }} title={l.active === false ? '已结束' : '活跃'}>
                   {l.active === false ? '○' : '●'}
                 </div>
@@ -381,51 +382,6 @@ export default function LoopView() {
                   )}
                 </div>
               </div>
-              {/* 编辑表单：多字段，用展开卡片而非 useDialog（它只支持单输入框）。
-                  改完点「保存」才提交，便于中途「放弃」。 */}
-              {editing?.id === l.id ? (
-                <div style={{ padding: '8px 12px 12px 30px', background: 'var(--soft)', borderBottom: '1px solid var(--soft-2)' }}>
-                  <textarea
-                    value={draft.prompt}
-                    onChange={(e) => setDraft((d) => ({ ...d, prompt: e.target.value }))}
-                    spellCheck={false}
-                    placeholder="任务描述"
-                    style={{
-                      width: '100%', height: 70, padding: 8, fontFamily: 'ui-monospace, Consolas, monospace',
-                      fontSize: 12, border: '1px solid var(--soft-2)', borderRadius: 4, background: 'var(--paper)', resize: 'vertical',
-                    }}
-                  />
-                  <div className="toolbar" style={{ marginTop: 6, flexWrap: 'wrap' }}>
-                    <label className="muted" style={{ fontSize: 12 }}>
-                      轮次上限
-                      <input className="dlg-input" style={{ width: 70, marginLeft: 6, height: 'auto' }}
-                        value={draft.maxIterations}
-                        onChange={(e) => setDraft((d) => ({ ...d, maxIterations: e.target.value }))} />
-                    </label>
-                    <label className="muted" style={{ fontSize: 12, marginLeft: 10 }}>
-                      完成短语
-                      <input className="dlg-input" style={{ width: 130, marginLeft: 6, height: 'auto' }}
-                        value={draft.completionPromise}
-                        onChange={(e) => setDraft((d) => ({ ...d, completionPromise: e.target.value }))} />
-                    </label>
-                    <label className="muted" style={{ fontSize: 12, marginLeft: 10 }}>
-                      会话
-                      <input className="dlg-input" style={{ width: 180, marginLeft: 6, height: 'auto' }}
-                        value={draft.sessionId}
-                        onChange={(e) => setDraft((d) => ({ ...d, sessionId: e.target.value }))} />
-                    </label>
-                    <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6 }}>
-                      <button className="btn small ghost" onClick={() => setEditing(null)}>放弃</button>
-                      <button className="btn small" onClick={saveEdit}>保存</button>
-                    </span>
-                  </div>
-                  <p className="muted" style={{ marginTop: 6, fontSize: 11 }}>
-                    提高轮次上限可复活「因到上限而停」的循环（手工取消的不复活）。
-                    下一轮起灌回改后的任务描述。
-                  </p>
-                </div>
-              ) : null}
-              </Fragment>
             );
           })}
       </div>
@@ -461,9 +417,133 @@ export default function LoopView() {
                   ? `promise=${r.promise ?? '—'} · 解析到 ${r.lastTextChars ?? '?'} 字`
                   : (r.promise ? `<promise>${r.promise}</promise>` : '')}
               </div>
+              {/* 展开看完整成果：列表里只放一句摘要，那一轮 Agent 到底做了什么要看全文 */}
+              {r.lastText ? (
+                <button className="btn small ghost" style={{ flexShrink: 0 }} onClick={() => setViewLog(r)}>成果</button>
+              ) : null}
             </div>
           ))}
       </div>
+
+      {/* 编辑弹窗：多字段用 Modal 而非 useDialog（后者只支持单个输入框）。
+          空间大，能完整看到任务描述全文与全部参数；改完点「保存」才提交。 */}
+      {editing ? (
+        <Modal title={`编辑循环 ${editing.id}`} onClose={() => setEditing(null)}>
+          <dl className="kv" style={{ marginBottom: 12 }}>
+            {(() => {
+              const l = (loops || []).find((x) => x.id === editing.id);
+              if (!l) return null;
+              const max = l.maxIterations > 0 ? l.maxIterations : '∞';
+              return (
+                <>
+                  <div className="kv-row">
+                    <dt>当前状态</dt>
+                    <dd>
+                      <span className={'tag' + (l.active === false ? '' : ' strong')}>{l.active === false ? '已结束' : '运行中'}</span>
+                      <span className="muted" style={{ marginLeft: 6 }}>
+                        第 {l.iteration}/{max} 轮
+                        {l.endReason ? ` · ${END_REASON[l.endReason] || l.endReason}` : ''}
+                      </span>
+                    </dd>
+                  </div>
+                  <div className="kv-row">
+                    <dt>开始时间</dt>
+                    <dd className="mono" style={{ fontSize: 12 }}>{fmt(l.startedAt)}</dd>
+                  </div>
+                  <div className="kv-row">
+                    <dt>最后触发</dt>
+                    <dd className="mono" style={{ fontSize: 12 }}>{l.lastFiredAt ? fmt(l.lastFiredAt) : '（尚未触发过）'}</dd>
+                  </div>
+                </>
+              );
+            })()}
+          </dl>
+
+          <label className="muted" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+            任务描述（下一轮起灌回这段文本）
+          </label>
+          <textarea
+            value={draft.prompt}
+            onChange={(e) => setDraft((d) => ({ ...d, prompt: e.target.value }))}
+            spellCheck={false}
+            style={{
+              width: '100%', height: 200, padding: 10,
+              fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 12,
+              border: '1px solid var(--soft-2)', borderRadius: 4,
+              background: 'var(--soft-1)', resize: 'vertical',
+            }}
+          />
+
+          <div className="toolbar" style={{ marginTop: 12, flexWrap: 'wrap' }}>
+            <label className="muted" style={{ fontSize: 12 }}>
+              轮次上限
+              <input className="dlg-input" style={{ width: 70, marginLeft: 6, height: 'auto' }}
+                value={draft.maxIterations}
+                onChange={(e) => setDraft((d) => ({ ...d, maxIterations: e.target.value }))} />
+            </label>
+            <label className="muted" style={{ fontSize: 12, marginLeft: 12 }}>
+              完成短语
+              <input className="dlg-input" style={{ width: 180, marginLeft: 6, height: 'auto' }}
+                value={draft.completionPromise}
+                onChange={(e) => setDraft((d) => ({ ...d, completionPromise: e.target.value }))}
+                placeholder="（留空 = 无承诺，只能靠上限收口）" />
+            </label>
+            <label className="muted" style={{ fontSize: 12, marginLeft: 12 }}>
+              会话
+              <input className="dlg-input" style={{ width: 220, marginLeft: 6, height: 'auto' }}
+                value={draft.sessionId}
+                onChange={(e) => setDraft((d) => ({ ...d, sessionId: e.target.value }))}
+                placeholder="sessionId（决定哪条 Stop hook 认得它）" />
+            </label>
+          </div>
+
+          <p className="muted" style={{ marginTop: 10, fontSize: 12 }}>
+            提高轮次上限可**复活**「因到上限而停」的循环（手工取消的不复活）。
+            会话决定归属：填错会让这条循环永远等不到 Stop hook。
+          </p>
+
+          <div className="toolbar" style={{ marginTop: 12, justifyContent: 'flex-end' }}>
+            <button className="btn ghost" onClick={() => setEditing(null)}>放弃</button>
+            <button className="btn" onClick={saveEdit}>保存</button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {/* 日志详情弹窗：该轮从 transcript 解析到的完整文本 */}
+      {viewLog ? (
+        <Modal
+          title={`${viewLog.loopId || '—'} 第 ${viewLog.iteration} 轮 · ${DECISION[viewLog.decision] || viewLog.decision}`}
+          onClose={() => setViewLog(null)}
+        >
+          <dl className="kv" style={{ marginBottom: 12 }}>
+            <div className="kv-row"><dt>时间</dt><dd>{fmt(viewLog.ts)}</dd></div>
+            <div className="kv-row">
+              <dt>会话</dt>
+              <dd>{viewLog.sessionId
+                ? <Copyable text={viewLog.sessionId} className="tag mono" title="点击复制">{viewLog.sessionId}</Copyable>
+                : <span className="muted">（本行未记录——会话不匹配的判定不写审计）</span>}</dd>
+            </div>
+            <div className="kv-row">
+              <dt>解析结果</dt>
+              <dd>
+                <span className="muted">
+                  {viewLog.promise ? <>promise=<code>{viewLog.promise}</code> · </> : '未检出 promise · '}
+                  文本 {viewLog.lastTextChars ?? '?'} 字
+                  {viewLog.lastText && viewLog.lastTextChars > viewLog.lastText.length
+                    ? `（下方仅前 ${viewLog.lastText.length} 字）` : ''}
+                </span>
+              </dd>
+            </div>
+          </dl>
+          <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
+            这一轮 Stop hook 从 transcript 取到的最后一条 assistant 文本——即「这一轮 Agent 做了什么」。
+          </div>
+          <pre style={{
+            margin: 0, padding: 12, background: 'var(--soft-1)', border: '1px solid var(--soft-2)',
+            borderRadius: 4, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '46vh', overflow: 'auto',
+          }}>{viewLog.lastText}</pre>
+        </Modal>
+      ) : null}
 
       <ManualAddCard snippet={status?.snippet} eventKey="Stop" />
 
