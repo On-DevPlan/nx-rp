@@ -151,7 +151,7 @@ test('smoke: hook status/log 只读路径可用（临时目录重定向，不碰
     assert.equal(stSkill.enabled, false);
     const logs = await promptMod.listPrompts({ all: false, limit: 5 });
     assert.deepEqual(logs, []);
-    const skills = await skillMod.skillStats({ all: false, limit: 5 });
+    const skills = await skillMod.skillStats({ limit: 5 });
     assert.deepEqual(skills, []);
     // loop：只读路径可用 + Stop 落点对坏输入静默放行（hook 协议铁律）
     const loopLogs = await loopMod.listLoopLog({ all: false, limit: 5 });

@@ -272,34 +272,49 @@ test('healthScore：使用分相对归一化 + 新鲜度 30 天线性衰减', as
   assert.equal(mod.scoreToStars(50), '★★★☆☆');
 });
 
-test('skillStats：按 skill 聚合、健康分倒序、cwd 过滤', async () => {
+test('skillStats：跨目录全局聚合、健康分倒序（无 cwd 维度）', async () => {
   const mod = await import(serviceUrl());
   const dirA = join(tmp, 'a');
-  // a: nx-rp 用 3 次（最近），sl-git 用 1 次；dirB: 别的目录
+  // a: nx-rp 用 3 次（最近），sl-git 用 1 次；dirB: 另一个项目里的调用
   for (let i = 0; i < 3; i++) {
     await mod.skillRecord({ skill: 'nx-rp', cwd: dirA });
   }
   await mod.skillRecord({ skill: 'sl-git-standard', cwd: dirA });
   await mod.skillRecord({ skill: 'other-proj-skill', cwd: join(tmp, 'b') });
 
+  // skill 是**跨目录的全局资产**：无论进程 cwd 在哪，统计都必须看到全部记录。
+  // 曾经这里按 cwd 过滤（要用户手动勾「跨全部目录」）——那会让健康分只反映
+  // 当前目录的采样，统计失真。
   const cwdDir = join(tmp, 'a');
   await mkdir(cwdDir, { recursive: true });
   const orig = process.cwd();
   process.chdir(cwdDir);
+  let rows;
   try {
-    const rows = await mod.skillStats({ all: false, limit: 10 });
-    assert.equal(rows.length, 2, '只统计当前 cwd');
-    assert.equal(rows[0].skill, 'nx-rp', '高频者排前');
-    assert.equal(rows[0].count, 3);
-    assert.equal(rows[0].score, 100, '刚用过 + 相对最高 → 满分');
-    assert.equal(rows[0].stars, '★★★★★');
-    assert.ok(rows[1].score < 100, '低频者分数更低');
+    rows = await mod.skillStats({ limit: 10 });
   } finally {
     process.chdir(orig);
   }
 
-  const allRows = await mod.skillStats({ all: true, limit: 10 });
-  assert.equal(allRows.length, 3, 'all 模式跨目录');
+  assert.equal(rows.length, 3, '三个 skill 全部计入——与进程 cwd 无关');
+  assert.equal(rows[0].skill, 'nx-rp', '高频者排前');
+  assert.equal(rows[0].count, 3);
+  assert.equal(rows[0].score, 100, '刚用过 + 相对最高 → 满分');
+  assert.equal(rows[0].stars, '★★★★★');
+  assert.ok(rows[1].score < 100, '低频者分数更低');
+  assert.ok(rows.some((r) => r.skill === 'other-proj-skill'), '别的目录里用过的 skill 也要出现');
+
+  // 换个 cwd 再查，结果必须**逐条一致**——证明 cwd 不再是过滤维度
+  const cwdB = join(tmp, 'b');
+  await mkdir(cwdB, { recursive: true });
+  process.chdir(cwdB);
+  let other;
+  try {
+    other = await mod.skillStats({ limit: 10 });
+  } finally {
+    process.chdir(orig);
+  }
+  assert.deepEqual(other, rows, '换 cwd 不改变统计结果');
 });
 
 test('skillStats limit 归一化：action 层负数回落 50（不丢记录）', async () => {
@@ -308,6 +323,6 @@ test('skillStats limit 归一化：action 层负数回落 50（不丢记录）',
   await mod.skillRecord({ skill: 's2', cwd: join(tmp, 'x') });
   const { ACTIONS } = await import(pathToFileURL(join(ROOT, 'src', 'runtime', 'registry.js')).href);
   const act = ACTIONS.find((a) => a.id === 'hook-skill.stats');
-  const rows = await act.run({ all: true, limit: -5 });
+  const rows = await act.run({ limit: -5 });
   assert.equal(rows.length, 2, '负 limit 回落默认 50');
 });

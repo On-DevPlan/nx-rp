@@ -201,6 +201,71 @@ test('listPrompts 的 limit 在 action 层归一化：负数/NaN 回落 50，超
   assert.equal(nan.length, 2, 'NaN 回落默认 50');
 });
 
+test('listPrompts：分组按**归一化路径**聚合，同一目录只出一条组', async () => {
+  const mod = await import(serviceUrl());
+  const dirA = join(tmp, 'proj-norm');
+  // 同一目录的另一种形态：路径分隔符不同 + 末尾多一道斜杠。
+  // Windows 上这正是真实数据里出现过的 D:\x 与 D:/x 分裂。
+  const dirAlt = dirA.replace(/\\/g, '/') + '/';
+  await mkdir(dirA, { recursive: true });
+  await mod.captureRecord({ prompt: 'a1', cwd: dirA });
+  await new Promise((r) => setTimeout(r, 10));
+  await mod.captureRecord({ prompt: 'a2', cwd: dirAlt });
+  await mod.captureRecord({ prompt: 'b1', cwd: join(tmp, 'proj-other') });
+
+  const { groups } = await mod.listPrompts({ all: true, limit: 50, shape: 'with-groups' });
+  const key = pathsMod.normalizeScope(dirA);
+  const mine = groups.filter((g) => g.key === key);
+  // 曾经按原始字符串分组 → 同一目录派生出两条组，用户在面板上看到两条指同一项目的项
+  assert.equal(mine.length, 1, '同一目录只能有一条组（归一化 key 去重）');
+  assert.equal(mine[0].count, 2, '两种形态的记录要归到同一条组里');
+  assert.ok(mine[0].display, '组要带一个可读的展示路径');
+
+  // 选中该组时必须**真的拿到记录**——这是面板「切组后空白」的原症状。
+  // 修复前：筛选走子串 + 文件首行早停，形态对不上就整文件跳过 → 0 条。
+  const byNative = await mod.listPrompts({ all: true, limit: 50, cwd: dirA });
+  assert.equal(byNative.length, 2, '按原生形态筛该组要拿到 2 条');
+  const byAlt = await mod.listPrompts({ all: true, limit: 50, cwd: dirAlt });
+  assert.equal(byAlt.length, 2, '按另一种形态筛同一条组也要拿到 2 条（归一化匹配）');
+  assert.ok(byNative.every((r) => pathsMod.normalizeScope(r.cwd) === key), '筛出来的记录必须都属于该目录');
+});
+
+test('listPrompts cwd：精确选一条目录，不再误捞同前缀的兄弟目录', async () => {
+  const mod = await import(serviceUrl());
+  const dirA = join(tmp, 'proj-alpha');
+  const dirB = join(tmp, 'proj-alpha-2');
+  await mod.captureRecord({ prompt: 'a1', cwd: dirA });
+  await mod.captureRecord({ prompt: 'b1', cwd: dirB });
+
+  // 曾经是子串匹配：`proj-alpha` 会把 `proj-alpha-2` 一起捞进来
+  const onlyA = await mod.listPrompts({ all: true, limit: 50, cwd: dirA });
+  assert.equal(onlyA.length, 1);
+  assert.equal(onlyA[0].prompt, 'a1', '只返回精确命中的那条目录');
+});
+
+test('log action：--groups 走声明过的 flag（面板的组切换器就靠它）', async () => {
+  const mod = await import(serviceUrl());
+  await mod.captureRecord({ prompt: 'p1', cwd: join(tmp, 'act-a') });
+  await mod.captureRecord({ prompt: 'p2', cwd: join(tmp, 'act-b') });
+  const { ACTIONS } = await import(pathToFileURL(join(ROOT, 'src', 'runtime', 'registry.js')).href);
+  const act = ACTIONS.find((a) => a.id === 'hook-prompt.log');
+
+  // 声明面：面板用的 groups flag 必须在（applySpec 只透传声明过的参数）
+  assert.ok(act.flags.groups, 'log action 必须声明 groups flag，否则面板拿不到分组');
+  assert.ok(act.flags.cwd, 'log action 必须声明 cwd flag');
+
+  // 行为面：拉全量分组必须拿到 {records, groups}
+  const res = await act.run({ all: true, groups: true, limit: 50 });
+  assert.ok(!Array.isArray(res), 'groups=1 时返回 {records, groups}，不是裸数组');
+  assert.ok(Array.isArray(res.groups) && res.groups.length >= 2, 'groups 要列出全部目录');
+  assert.ok(res.groups.every((g) => 'display' in g && 'key' in g), '每条组要有 key 与可读 display');
+
+  // **组列表不随 cwd 收窄**——否则用户切进一个目录后就再也切不出去
+  const locked = await act.run({ all: true, groups: true, cwd: join(tmp, 'act-a'), limit: 50 });
+  assert.equal(locked.records.length, 1, 'records 收窄到选中目录');
+  assert.ok(locked.groups.length >= 2, 'groups 仍然是全量的（切换器要一直在）');
+});
+
 async function captureTwo() {
   const mod = await import(serviceUrl());
   const dir = join(tmp, 'lim'); // 同一 cwd → 同一个日志文件，两条记录才可比
@@ -275,7 +340,7 @@ test('capture 后日志文件落在 promptsDir 下（哈希文件名，全 ASCII
   assert.ok(existsSync(r.file));
 });
 
-test('listPrompts cwdFilter：子串匹配跨目录 + groups 聚合', async () => {
+test('listPrompts cwdFilter：归一化后精确选一条目录 + groups 聚合', async () => {
   const mod = await import(serviceUrl());
   const dirA = join(tmp, 'proj-alpha');
   const dirB = join(tmp, 'proj-beta');
@@ -286,14 +351,14 @@ test('listPrompts cwdFilter：子串匹配跨目录 + groups 聚合', async () =
   await new Promise((r) => setTimeout(r, 10));
   await mod.captureRecord({ prompt: 'b1', cwd: dirB });
 
-  // cwdFilter 命中 dirA — 不读 dirB 的文件
-  const filtered = await mod.listPrompts({ all: true, limit: 50, cwdFilter: 'proj-alpha' });
+  // cwd 命中 dirA —— 精确匹配，不读 dirB 的记录
+  const filtered = await mod.listPrompts({ all: true, limit: 50, cwd: dirA });
   assert.equal(filtered.length, 2);
-  assert.ok(filtered.every((r) => r.cwd.toLowerCase().includes('proj-alpha')));
+  assert.ok(filtered.every((r) => pathsMod.normalizeScope(r.cwd) === pathsMod.normalizeScope(dirA)));
 
   // groups 形状：全量聚合（不被 limit 截）
   const { records, groups } = await mod.listPrompts({
-    all: true, limit: 1, cwdFilter: null, shape: 'with-groups',
+    all: true, limit: 1, cwd: null, shape: 'with-groups',
   });
   assert.equal(records.length, 1, 'limit=1 时只返回一条记录');
   assert.ok(groups.length >= 2, 'groups 是全量聚合');

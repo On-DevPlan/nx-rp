@@ -93,12 +93,11 @@ export default {
       id: 'hook-skill.stats',
       cli: ['hook', 'skills'],
       http: ['GET', '/api/hook-skill/skills'],
-      summary: 'Skill 使用统计与健康分（默认当前 cwd，--all 跨目录）',
+      summary: 'Skill 使用统计与健康分（**全局聚合**——skill 是跨目录的全局资产，没有 cwd 维度）',
       flags: {
-        all: { type: 'boolean', hint: '跨全部目录' },
         limit: { type: 'number', hint: '条数（默认 50）' },
       },
-      run: (ctx) => service.skillStats({ all: !!ctx.all, limit: normalizeLimit(ctx.limit) }),
+      run: (ctx) => service.skillStats({ limit: normalizeLimit(ctx.limit) }),
       render: (list) => {
         if (!list.length) return '（暂无 Skill 记录——启用 hook 后在会话里触发一个 skill 再来）';
         return list

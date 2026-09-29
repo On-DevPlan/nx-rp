@@ -13,7 +13,9 @@ const BASE_RULES = {
 };
 
 export default defineConfig([
-  { ignores: ['src/web/public/**', 'node_modules/**', 'assets/**', '.claude/repo/**', '.claude/**'] },
+  // .tool/ 与 .playwright-mcp/ 在 .gitignore 里是「本地工具产物」——不是项目代码，
+  // 却会被 lint 扫到：随便放个临时脚本就 `pnpm test` 全红。与 .claude/ 同理排除。
+  { ignores: ['src/web/public/**', 'node_modules/**', 'assets/**', '.claude/repo/**', '.claude/**', '.tool/**', '.playwright-mcp/**'] },
   {
     files: ['**/*.{js,mjs,jsx}'],
     languageOptions: {

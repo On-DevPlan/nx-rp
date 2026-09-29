@@ -3,20 +3,21 @@
 // 与 doc / deps 同构：数据从 /api 拉，操作走同一条 action，
 // 底部 CLI 提示由命令表派生（CliHints）。开关只动本 hook 的 entry
 // （marker `__nx_rp_skill_track__`），不影响提示词日志等其他 hooks。
+//
+// **统计是全局的，没有 scope 维度**：skill 装在 `~/.claude/skills` 或
+// `<项目>/.claude/skills`，是跨目录的全局资产——「这个 skill 最近用过吗」
+// 问的是本机整体。所以这里不提供、也不显示 cwd 筛选。
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../../web/frontend/api/client.js';
 import { useDialog, useGuard, useToast } from '../../web/frontend/components/ui.jsx';
 import { CliHints } from '../../web/frontend/components/CliHints.jsx';
-import { useStore } from '../../web/frontend/store.jsx';
 import ManualAddCard from '../../web/frontend/components/ManualAddCard.jsx';
 
 const LIMIT = 200;
 
 export default function HookSkillView() {
-  const { boot } = useStore();
   const [status, setStatus] = useState(null);
   const [skills, setSkills] = useState(null);
-  const [all, setAll] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const guard = useGuard();
   const toast = useToast();
@@ -26,12 +27,12 @@ export default function HookSkillView() {
     setLoadError(null);
     try {
       setStatus(await api('/api/hook-skill/status'));
-      setSkills(await api('/api/hook-skill/skills' + (all ? '?all=true&limit=' + LIMIT : '?limit=' + LIMIT)));
+      setSkills(await api('/api/hook-skill/skills?limit=' + LIMIT));
     } catch (e) {
       // 失败要如实呈现——不能让「请求失败」伪装成「暂无记录」
       setLoadError(e.message || '加载失败');
     }
-  }, [all]);
+  }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -59,8 +60,7 @@ export default function HookSkillView() {
   return (
     <div>
       <div className="toolbar" style={{ marginBottom: 12 }}>
-        <span className="muted">scope: <code>{boot?.cwdScope || ''}</code></span>
-        <span className="muted" style={{ marginLeft: 'auto' }}>统计按 serve 进程的 cwd 过滤，勾选「跨全部目录」查看其它项目</span>
+        <span className="muted">全局统计 — 不按目录过滤（skill 装在本机，跨项目通用）</span>
       </div>
 
       {loadError && (
@@ -81,10 +81,6 @@ export default function HookSkillView() {
         <div className="toolbar" style={{ padding: '8px 12px' }}>
           <button className="btn small" onClick={enable} disabled={!status || status.enabled || status.corrupt}>启用</button>
           <button className="btn small ghost" onClick={disable} disabled={!status || !status.enabled || status.corrupt}>停用</button>
-          <label className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8 }}>
-            <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} style={{ height: 'auto' }} />
-            跨全部目录
-          </label>
           <span className="muted" style={{ marginLeft: 'auto', fontSize: 12 }}>
             健康分 = 使用量(0-60，相对最高频归一) + 新鲜度(0-40，30 天线性衰减)，借鉴 teamai-cli
           </span>
@@ -129,7 +125,10 @@ export default function HookSkillView() {
               </div>
               <div className="kv-row">
                 <dt>Skill 统计目录</dt>
-                <dd className="mono nowrap" title={status.skillsDir}>{status.skillsDir}</dd>
+                <dd className="mono nowrap" title={status.skillsDir}>
+                  {status.skillsDir}
+                  <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>← 分片存放；查询时全局聚合</span>
+                </dd>
               </div>
             </dl>
             {status.manualCount > 0 ? (

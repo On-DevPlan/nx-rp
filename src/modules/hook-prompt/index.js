@@ -76,18 +76,18 @@ export default {
       id: 'hook-prompt.log',
       cli: ['hook', 'log'],
       http: ['GET', '/api/hook-prompt/log'],
-      summary: '查提示词记录（默认当前 cwd，--all 跨目录，--cwd 子串筛，--groups 仅看分组）',
+      summary: '查提示词记录（默认当前目录，--all 跨全部目录，--cwd 精确选一条目录，--groups 仅看分组）',
       // 读命令的 flag 一律不带 default——「不传」本身是有意义的输入（默认当前 cwd）
       flags: {
-        all: { type: 'boolean', hint: '跨全部目录' },
+        all: { type: 'boolean', hint: '跨全部目录（与 --cwd 互斥，同时给则 --cwd 生效）' },
         limit: { type: 'number', hint: '条数（默认 50）' },
-        cwd: { type: 'string', hint: 'cwd 子串筛选（仅 --all 生效）' },
+        cwd: { type: 'string', hint: '精确选一条目录（接受任意形态，内部按归一化路径匹配）' },
         groups: { type: 'boolean', hint: '仅显示 cwd 分组聚合，不列记录' },
       },
       run: (ctx) => service.listPrompts({
         all: !!ctx.all,
         limit: normalizeLimit(ctx.limit),
-        cwdFilter: ctx.cwd || null,
+        cwd: ctx.cwd || null,
         shape: ctx.groups ? 'with-groups' : 'records',
       }),
       render: (result, ctx) => {
@@ -95,7 +95,8 @@ export default {
         if (ctx.groups) {
           const groups = Array.isArray(result) ? [] : (result.groups || []);
           if (!groups.length) return '（无 cwd 分组数据）';
-          return groups.map((g) => `  ${g.cwd}  —  ${g.count} 条  (最近 ${(g.latestTs || '').replace('T', ' ').slice(0, 19)})`).join('\n');
+          // 展示用 display（该目录最新一条记录的原始形态），选中时把 display 原样回传即可
+          return groups.map((g) => `  ${g.display}  —  ${g.count} 条  (最近 ${(g.latestTs || '').replace('T', ' ').slice(0, 19)})`).join('\n');
         }
         // 默认形态：records 数组
         const list = Array.isArray(result) ? result : (result.records || []);

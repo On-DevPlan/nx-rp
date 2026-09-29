@@ -7,10 +7,11 @@
 //   score = 使用分(0-60，相对最高使用量归一化) + 新鲜度分(0-40，30 天线性衰减)
 //
 // 日志类 hook 的铁律是**绝不打扰会话**：skill-track 任何异常都吞掉、退出码恒 0。
-// 记录文件按 cwd 哈希分文件（skillsFileFor），skills --all 跨目录查询。
+// 记录文件按 cwd 哈希分文件（skillsFileFor）——那只是**落盘分片**，便于并发追加；
+// 查询侧（healthScore / skillStats）一律**全局聚合**，skill 是跨目录的全局资产。
 import fsp from 'node:fs/promises';
 import { join } from 'node:path';
-import { CLAUDE_SETTINGS_PATH, SKILLS_DIR, skillsFileFor, cwdScope } from '../../core/paths.js';
+import { CLAUDE_SETTINGS_PATH, SKILLS_DIR, skillsFileFor } from '../../core/paths.js';
 import { appendOwnGroup, removeOwnGroups, toggleSettings, findOwnGroups, ownsGroup, readSettings } from '../../core/claude-settings.js';
 import { readStdin, parseHookEvent, deriveSessionId } from '../../core/hook-io.js';
 
@@ -268,12 +269,18 @@ export function scoreToStars(score) {
   return '★'.repeat(filled) + '☆'.repeat(5 - filled);
 }
 
-// 查询：默认当前 cwd（按归一化 key 匹配）；all 跨全部目录。
+// 查询：**全局聚合，与 cwd 无关**。
+//
+// skill 装在 `~/.claude/skills` 或 `<项目>/.claude/skills`，是**跨目录**的全局资产：
+// 「某个 skill 最近用过吗、用得多不多」问的是本机整体，不是某个项目的采样。
+// 早期版本按 cwd 过滤（还要用户手动勾「跨全部目录」），结果是健康分与「最近使用」
+// 只反映当前目录，统计失真——这个 scope 维度是伪概念，已删除。
 // 返回按 skill 聚合的使用统计 + 健康分，倒序（分高在前）。
-export async function skillStats({ all = false, limit = 50 } = {}) {
-  const files = all
-    ? (await fsp.readdir(SKILLS_DIR).catch(() => [])).filter((f) => f.endsWith('.jsonl')).map((f) => join(SKILLS_DIR, f))
-    : [skillsFileFor(process.cwd()).file];
+export async function skillStats({ limit = 50 } = {}) {
+  const files = (await fsp.readdir(SKILLS_DIR).catch(() => []))
+    .filter((f) => f.endsWith('.jsonl'))
+    .map((f) => join(SKILLS_DIR, f));
+
   const out = [];
   for (const file of files) {
     let raw;
@@ -289,12 +296,9 @@ export async function skillStats({ all = false, limit = 50 } = {}) {
       } catch { /* 坏行跳过 */ }
     }
   }
-  const scoped = all
-    ? out
-    : out.filter((r) => typeof r.cwd === 'string' && skillsFileFor(r.cwd).key === cwdScope());
 
   const agg = new Map();
-  for (const r of scoped) {
+  for (const r of out) {
     if (typeof r.skill !== 'string' || !r.ts) continue;
     const cur = agg.get(r.skill) ?? { skill: r.skill, count: 0, lastUsed: '' };
     cur.count += 1;

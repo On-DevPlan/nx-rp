@@ -7,7 +7,7 @@
 // 日志文件按 cwd 哈希分文件（promptsFileFor），log --all 跨目录查询。
 import fsp from 'node:fs/promises';
 import { join } from 'node:path';
-import { CLAUDE_SETTINGS_PATH, PROMPTS_DIR, promptsFileFor, cwdScope } from '../../core/paths.js';
+import { CLAUDE_SETTINGS_PATH, PROMPTS_DIR, promptsFileFor, cwdScope, normalizeScope } from '../../core/paths.js';
 import { appendOwnGroup, removeOwnGroups, toggleSettings, findOwnGroups, ownsGroup, readSettings } from '../../core/claude-settings.js';
 import { readStdin, parseHookEvent } from '../../core/hook-io.js';
 
@@ -136,104 +136,80 @@ export async function captureRecord({ prompt, cwd, sessionId }) {
 // 默认返回**记录数组**（兼容历史接口）；`{ shape: 'with-groups' }` 时返回
 // `{ records, groups }`，面板/CLI 按需取分组聚合。
 //
-// cwd 筛选（仅 all 模式）：cwdFilter 子串匹配；文件级早停 + ts 早停：
-//   - 文件名 = cwd sha1 前 12 位，无法反推 cwd——扫首行拿 cwd 比对，不匹配整文件跳过。
-//   - 单文件按 ts 倒序遍历（append-only，文件尾即最新），命中 limit 立即跳出该文件。
-export async function listPrompts({ all = false, limit = 50, cwdFilter = null, shape = 'records' } = {}) {
-  if (all) {
-    const { records, groups } = await collectAll({ limit, cwdFilter });
-    return shape === 'with-groups' ? { records, groups } : records;
-  }
-  // 单文件模式不涉及聚合（cwd 已锁）
-  return collectScope({ limit });
+// **cwd 一律走归一化 key**（`normalizeScope`）。曾经这里拿记录里的原始 `cwd`
+// 字符串分组、又用子串筛选，后果是同一个目录派生出两条组（`D:\x` 与 `D:/x`），
+// 选中其中一条时另一条形态的记录一条都匹配不上 → 面板切组后**空白**。
+// 存储侧 `promptsFileFor` 本来就是按归一化 key 分文件的（见 paths.js 的 hashOf），
+// 所以这里对齐它即可，不需要迁移历史数据。
+export async function listPrompts({ all = false, limit = 50, cwd = null, shape = 'records' } = {}) {
+  // 精确匹配一条目录；`scope: true` 表示「跟随当前 cwd」。两种形态统一收到 `target`。
+  const target = cwd ? normalizeScope(cwd) : (all ? null : cwdScope());
+  const { records, groups } = await collectAll({ limit, target });
+  if (shape === 'with-groups') return { records, groups };
+  return records;
 }
 
-async function collectScope({ limit }) {
-  const file = promptsFileFor(process.cwd()).file;
-  let raw;
-  try {
-    raw = await fsp.readFile(file, 'utf8');
-  } catch {
-    return [];
-  }
-  const key = cwdScope();
-  return parseLines(raw)
-    .filter((r) => typeof r.cwd === 'string' && promptsFileFor(r.cwd).key === key)
-    .slice(-limit)
-    .reverse();
+// 从原始记录取归一化 scope key；cwd 缺失的记为 null（由调用方决定丢还是归入「(未知)」）。
+function scopeKeyOf(r) {
+  return typeof r.cwd === 'string' && r.cwd ? normalizeScope(r.cwd) : null;
 }
 
-async function collectAll({ limit, cwdFilter }) {
-  const needle = typeof cwdFilter === 'string' ? cwdFilter.trim().toLowerCase() : '';
+async function collectAll({ limit, target }) {
   let files;
   try {
     files = (await fsp.readdir(PROMPTS_DIR)).filter((f) => f.endsWith('.jsonl'));
   } catch {
     return { records: [], groups: [] };
   }
-  const matched = [];
-  for (const f of files) {
-    const full = join(PROMPTS_DIR, f);
-    let raw;
-    try {
-      raw = await fsp.readFile(full, 'utf8');
-    } catch {
-      continue;
-    }
-    if (needle) {
-      // 文件级早停：首行 JSON 拿 cwd，匹配不上整文件跳过
-      const head = firstNonEmptyLine(raw);
-      if (!head) continue;
-      let parsed;
-      try { parsed = JSON.parse(head); } catch { continue; }
-      const cwd = typeof parsed.cwd === 'string' ? parsed.cwd : '';
-      if (!cwd.toLowerCase().includes(needle)) continue;
-    }
-    matched.push(raw);
-  }
 
-  // 跨文件按 ts 倒序归并：每个文件只 parse 出尾部 N 条即可（ts 单调，尾部即最新）。
-  // groups 是「所有 tail 扫描到」的 cwd 聚合——不被 limit 截（用户切 --groups 时
-  // 仍能看到全量目录列表）。records 是归并到 limit 的最新前 N。
+  // 组列表**永远全局**：它是面板上的「目录切换器」——一旦它跟着 target 收窄，
+  // 用户切进某个目录后就只剩自己那一项，再也切不出去。
+  // 所以无论选没选目录都扫全部文件；**只有 records 受 target 收窄**。
   //
-  // TAIL_PER_FILE：限单文件 parse 上限。limit*4 起步够聚合（覆盖面板默认 200×4=800）；
-  // 用户实际 cwd 数量远小于文件数时等于零浪费；存在「一个 cwd 一文件数百条」罕见场景
-  // 时会被聚合截到 800 —— 取舍：保留文件扫描 O(1) 内存的简洁、接受聚合有界。
-  const TAIL_PER_FILE = Math.max(limit * 4, 200);
-  const tails = matched.map((raw) => {
-    const lines = raw.split('\n');
-    const out = [];
-    for (let i = lines.length - 1; i >= 0 && out.length < TAIL_PER_FILE; i--) {
-      const line = lines[i];
-      if (!line.trim()) continue;
-      try { out.push(JSON.parse(line)); } catch { /* 坏行跳过 */ }
-    }
-    return out;
-  });
+  // TAIL_PER_FILE：限单文件进入 records 归并的条数，避免「一个目录几千条」时全量
+  // 载入内存。代价：该目录超过这个数的更早记录不会出现在列表里（groups 的 count
+  // 也只统计到这里）。面板一次最多看 200 条，200*20=4000 已是实际使用的天花板。
+  const TAIL_PER_FILE = Math.max(limit * 20, 500);
+  const exact = target ? promptsFileFor(target).file : null;
 
-  // 聚合：来自所有 tail（与 limit 解耦）
   const groupMap = new Map();
-  for (const t of tails) {
-    for (const r of t) {
-      const cwd = typeof r.cwd === 'string' && r.cwd ? r.cwd : '(未知)';
-      const g = groupMap.get(cwd) || { cwd, count: 0, latestTs: '' };
+  const tails = [];
+  for (const name of files) {
+    const full = join(PROMPTS_DIR, name);
+    const recs = await readRecords(full);
+    if (!recs.length) continue;
+
+    // 分组聚合：按归一化 key 归并（不被 limit 截），display 取该目录最新一条记录的
+    // 原始形态，保留用户自己的大小写与分隔符。曾经按原始 cwd 字符串分组 → 同一目录
+    // 派生出两条组（`D:\x` 与 `D:/x`），选中其一另一条形态的记录就一条都匹配不上。
+    for (const r of recs) {
+      const key = scopeKeyOf(r);
+      if (!key) continue;
+      const g = groupMap.get(key) || { key, display: r.cwd, count: 0, latestTs: '' };
       g.count += 1;
-      if (typeof r.ts === 'string' && (!g.latestTs || r.ts > g.latestTs)) g.latestTs = r.ts;
-      groupMap.set(cwd, g);
+      if (typeof r.ts === 'string' && r.ts > g.latestTs) { g.latestTs = r.ts; g.display = r.cwd; }
+      groupMap.set(key, g);
     }
+
+    // 选了目录就只让那一个文件进 records——文件名 = 归一化 key 的 sha1 前 12 位，
+    // O(1) 定位，既不读别的目录、也不会因为原文大小写/分隔符形态不同而漏掉。
+    // 历史版本曾用「首行 cwd 子串」早停：形态一变就误杀，还把兄弟目录
+    // （proj-alpha 匹配上 proj-alpha-2）一并捞了进来。
+    if (exact && full !== exact) continue;
+    const tail = recs.slice(-TAIL_PER_FILE);
+    tail.reverse(); // ts 单调 → 倒序即最新在前，归并取头
+    tails.push(tail);
   }
 
   // k 路归并：每个文件看作倒序流，弹出 ts 最大的入 records，达到 limit 即停。
-  // tail 数组头 = 最新（倒序遍历先 push 进来的）；比较取头部；取出用 shift（O(N) 但
-  // 单文件尾巴顶多几百条 + 文件数小，可接受）。
   const records = [];
   while (records.length < limit) {
     let bestIdx = -1;
     let bestTs = '';
     for (let i = 0; i < tails.length; i++) {
-      if (!tails[i].length) continue;
       const head = tails[i][0];
-      const t = (head && head.ts) || '';
+      if (!head) continue;
+      const t = head.ts || '';
       if (bestIdx < 0 || t > bestTs) { bestTs = t; bestIdx = i; }
     }
     if (bestIdx < 0) break; // 所有文件流都空了
@@ -244,18 +220,18 @@ async function collectAll({ limit, cwdFilter }) {
   return { records, groups };
 }
 
-function parseLines(raw) {
+// 读一个文件并 parse 出全部记录（坏行跳过）。文件不存在 = 该目录还没记录，返回空数组。
+async function readRecords(file) {
+  let raw;
+  try {
+    raw = await fsp.readFile(file, 'utf8');
+  } catch {
+    return [];
+  }
   const out = [];
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
     try { out.push(JSON.parse(line)); } catch { /* 坏行跳过 */ }
   }
   return out;
-}
-
-function firstNonEmptyLine(raw) {
-  for (const line of raw.split('\n')) {
-    if (line.trim()) return line;
-  }
-  return null;
 }
