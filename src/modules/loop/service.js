@@ -32,14 +32,29 @@ const TRANSCRIPT_TAIL_LINES = 100;
 // 100 行的上限在极端情况下按字节兜底。
 const TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024;
 
-// 审计日志里存「该轮解析到的文本」的上限。
+// 审计日志里存「该轮解析到的文本」的**字节**上限。
 //
-// 存全文的代价：这条文本会随每轮 append 进 JSONL，长会话能把它撑得很大
-// （rails 的教训——日志无轮转）。存太短又没法复盘（面板上只能看到一句摘要）。
-// 4000 字是折中：通常够看懂 Agent 那一轮做了什么，也不会让日志膨胀失控。
-// 面板把 200 字当摘要、点开看这个上限内的全文；服务端另记 lastTextChars
-// 说明真实长度，超出时面板明示「已截断」。
-const AUDIT_TEXT_CAP = 4000;
+// 为什么用字节而不是字数：截断是按 UTF-8 字节算的才准（中文 3 字节/字，
+// 按字符数算会让中文条目比英文长 3 倍）。这里也用字节，与下面的截断逻辑一致。
+//
+// 为什么是这个量级：一轮 Agent 回复通常 1-5KB，50KB 足以装下绝大多数完整回复；
+// 同时它是 append-only JSONL 的单条上限，即便跑几百轮也不至于失控。
+// 真的超了会记 lastTextTruncated，面板明示「不是完整回复」而不是假装完整。
+const AUDIT_TEXT_CAP = 50 * 1024;
+
+// 折成单行**仅用于列表摘要**（逗号处截断）。存进审计日志的必须是原文——
+// 一旦把换行压成空格，markdown 结构就没了，弹窗里看到的是挤成一坨的文本
+// （这是修过的一处：此前存的就是折叠后的单行）。
+function oneLine(s, n) {
+  return String(s).replace(/\s+/g, ' ').trim().slice(0, n);
+}
+
+// 按 UTF-8 字节安全截断：不切断多字节字符（否则 JSON.stringify 会产出 U+FFFD）
+function capBytes(s, maxBytes) {
+  const buf = Buffer.from(s, 'utf8');
+  if (buf.length <= maxBytes) return { text: s, truncated: false };
+  return { text: buf.subarray(0, maxBytes).toString('utf8'), truncated: true };
+}
 
 // ─── hook 配置（项目级） ──────────────────────────────────────────────
 
@@ -612,9 +627,15 @@ async function stopHookInner(raw) {
       || salvageTranscriptPath(raw);
     const text = await readLastAssistantText(transcriptPath);
     const promise = extractPromise(text);
+    const capped = text === null ? null : capBytes(text, AUDIT_TEXT_CAP);
     const textFields = {
-      lastText: text === null ? null : text.replace(/\s+/g, ' ').slice(0, AUDIT_TEXT_CAP),
+      // 存**原文**（保留换行与 markdown 结构）——弹窗里要能读。折叠成单行是错的。
+      lastText: capped ? capped.text : null,
+      lastTextTruncated: capped ? capped.truncated : false,
       lastTextChars: text === null ? null : text.length,
+      // 列表行用的一句话摘要。文本本就没有换行的（单行回复）不重复存一份。
+      lastTextHead: text === null ? null
+        : (capped.text.includes('\n') ? oneLine(capped.text, 300) : undefined),
     };
 
     // 分支 3：迭代超限

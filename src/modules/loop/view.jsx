@@ -23,6 +23,14 @@ function fmt(ts) {
   return String(ts || '').replace('T', ' ').slice(0, 19);
 }
 
+// 一行摘要：优先用服务端存的 lastTextHead（由原文折叠而来，保留了可读性）；
+// 旧条目（v0.9.3 之前）没有该字段，回退到把 lastText 折叠成单行——
+// 那些条目的 lastText 本来就是折叠过的单行，所以回退也是等价的。
+function headOf(r) {
+  if (r.lastTextHead !== undefined) return r.lastTextHead;
+  return r.lastText ? String(r.lastText).replace(/\s+/g, ' ').trim().slice(0, 300) : null;
+}
+
 // 一条循环的会话归属标签。
 //
 // 两个字段都是「这个会话」的等价标识，取先有值的那个：
@@ -411,11 +419,14 @@ export default function LoopView() {
                   {String(r.sessionId).slice(0, 8)}
                 </Copyable>
               ) : null}
+              {/* 一句话摘要：优先用服务端存好的 lastTextHead（从原文折叠而来）；
+                  旧条目没有这个字段，回退到把 lastText 折叠——历史数据依然可读。 */}
               <div className="muted" style={{ flex: 1, minWidth: 120, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                title={r.lastText || ''}>
+                title={headOf(r) || ''}>
                 {r.decision === 'continue'
                   ? `promise=${r.promise ?? '—'} · 解析到 ${r.lastTextChars ?? '?'} 字`
                   : (r.promise ? `<promise>${r.promise}</promise>` : '')}
+                {headOf(r) ? ` · ${headOf(r)}` : ''}
               </div>
               {/* 展开看完整成果：列表里只放一句摘要，那一轮 Agent 到底做了什么要看全文 */}
               {r.lastText ? (
@@ -529,14 +540,19 @@ export default function LoopView() {
                 <span className="muted">
                   {viewLog.promise ? <>promise=<code>{viewLog.promise}</code> · </> : '未检出 promise · '}
                   文本 {viewLog.lastTextChars ?? '?'} 字
-                  {viewLog.lastText && viewLog.lastTextChars > viewLog.lastText.length
-                    ? `（下方仅前 ${viewLog.lastText.length} 字）` : ''}
+                  {viewLog.lastTextTruncated
+                    ? <span className="bad"> · ⚠ 超出存储上限，下方不是完整回复</span>
+                    : null}
                 </span>
               </dd>
             </div>
           </dl>
           <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
             这一轮 Stop hook 从 transcript 取到的最后一条 assistant 文本——即「这一轮 Agent 做了什么」。
+            {/* 早期版本只存 200 字且把换行折叠掉了，那些历史条目补不回来——如实标出，别让人以为是被截了 */}
+            {viewLog.lastText && viewLog.lastTextChars > viewLog.lastText.length ? (
+              <span className="bad">（这条是 v0.9.3 之前记的旧条目，当时只存前 200 字，原文已无法恢复）</span>
+            ) : null}
           </div>
           <pre style={{
             margin: 0, padding: 12, background: 'var(--soft-1)', border: '1px solid var(--soft-2)',
