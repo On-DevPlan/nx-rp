@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.6 / 2026-09-29
+
+- **loop：修改绑会话不彻底 + 面板 tab 重排**（修复型）
+  - **修：改绑会话时必须同时清 env 残留的 `claudeSessionId`**（真实事故）
+    - `loop-6` 被错误绑到会话 A（env 捕获把两个会话字段都写成了 A）；
+      用 `loop update --session-id B` 改绑后，A 的 Stop 事件**仍继续命中它**——
+      `updateLoop` 只更新了 `sessionId`，`claudeSessionId` 还留着 A；
+      `pickLoop` 的语义是「payload 的 session_id 比对两个字段、取先命中者」，
+      于是**改绑不彻底等于没改**，iteration 还在错误会话里往上涨。
+    - 修法：显式改绑 `sessionId` 时，若 `claudeSessionId` 与新值不同 → 一并清 null
+      （它是「启动进程 env 的残留」，代表执行进程而非用户意图；改绑场景恰恰是
+      「env 绑错了」）。传空串（清显式绑定）时保留 `claudeSessionId`——
+      那是唯一剩下的身份。
+    - 回归测试锁死两个方向；全量 212 单测全绿。
+  - **同时落地**：`SubagentStop` 放行不认领——子 agent 与主 agent **共享 session_id**
+    （实测），不加闸时子 agent 的回合边界会被当成主会话的，凭空消耗一个轮次。
+    放在读状态/抢锁之前：不该发生的事不留痕（不占锁、不写状态、不写审计）。
+  - **ui：面板 tab 重排**——提示词日志 / Skill 追踪 / 循环 三个最常看的面板移到最前
+    （原来排在文档与召回 / 依赖图之后，要点两次才能到）。
+
 ## 0.9.5 / 2026-09-29
 
 - **loop：审计日志存原文 + prompt 版本回溯**（特性型）
