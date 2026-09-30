@@ -49,29 +49,41 @@ nx-rp loop start "<任务描述>" \
 
 ### 长任务描述用 heredoc（多行必用）
 
-**任务描述通常是多行长规范，直接当参数传会出事**：Windows / Git Bash 下多行参数
+**任务描述通常是多行长规范**，直接当参数传会出事：Windows / Git Bash 下多行参数
 跨进程边界会被切开——实测 `loop start "$P" --max-iterations 7`（P 含两行）到程序里
 只剩第一行，**后面的 flag 全丢**（argv 个数 9 → 5），于是上限、承诺词静默变成默认值。
 
-把 `prompt` 传成 `-`，从 stdin 读，多行内容根本不经过 argv：
+**把 `prompt` 传成 `-`，从 stdin 读，多行内容根本不经过 argv。**
+
+### 模板（成功案例，复制即可用）
 
 ```bash
-nx-rp loop start - --completion-promise "DONE" --max-iterations 20 <<'EOF'
-把 src/foo.js 的测试补到全绿。
+nx-rp loop start - --max-iterations N --completion-promise "DONE" --session-id SID <<'EOF'
+任务描述（多行）
 
-要求：
-1. 每次迭代先跑 npm test
-2. 失败则定位并修复
-3. 全通过后输出 <promise>DONE</promise>
+验收：
+- 第一条
+- 第二条
+
+完成后输出 <promise>DONE</promise>
 EOF
 ```
+
+关键点（下面会解释为什么）：
+
+- **`-`**：从 stdin 读 prompt。多行内容不经过 argv，绕开平台切分
+- **`<<'EOF'`**（带单引号）：shell **不做任何展开**，`$VAR` 和反引号原样传入
+- **flag 全在 `<<'EOF'` 之前**：放在后面会被当成独立命令（实测第 #2 种错误）
+- **EOF 必须顶格在行首**：缩进会触发 EOF 永不到达（实测第 #3 种错误，会**吞掉后续所有命令**）
 
 `loop update --prompt -` 同理（改任务描述也常是多行）。管道也行：
 `cat 规范.md | nx-rp loop start - ...`。
 
-### AI 写 heredoc 的常见错误（实测过的，不是想当然）
+`session-id` 强烈建议**显式传**——loop 的会话归属靠它认领，不显式时落进 CLAUDE_CODE_SESSION_ID 兜底，**跨会话布防时容易绑错**（这是另一个坑，不在本节展开）。
 
-四种**实测**过的错误写法，**全都有人会建议不到标准**——下面的❌会出事，✅才安全：
+### AI 写 heredoc 的常见错误（实测对照 —— 参考用）
+
+四种**实测**过的错误写法（按危险性从高到低）。**遇到时能对应立即解决**：
 
 #### ❌ 1. 定界符不加引号 `<<EOF` —— **数据静默改写 / 命令执行**
 
@@ -138,22 +150,6 @@ EOF
 CLI 立刻报 `缺少必填参数 <prompt>`（退出码 1）。**这是安全失败**——循环没建。
 
 ✅ 别忘了 `-`。
-
-### 模板（直接复制）
-
-```bash
-nx-rp loop start - --max-iterations N --completion-promise "DONE" --session-id SID <<'EOF'
-任务描述（多行）
-
-验收：
-- 第一条
-- 第二条
-
-完成后输出 <promise>DONE</promise>
-EOF
-```
-
-`session-id` 强烈建议**显式传**——loop 的会话归属靠它认领，不显式时落进 CLAUDE_CODE_SESSION_ID 兜底，**跨会话布防时容易绑错**（这是另一个坑，不在本节展开）。
 
 ## 标准起手式
 
