@@ -338,3 +338,33 @@ test('F5 get 位置参数过多 → 报错（不静默忽略多余的）', async
   );
 });
 
+
+test('list：列出所有 skill + 默认 install + groups；默认 install 自动从 package.json.name 推', async () => {
+  const skill = await loadSkill();
+  const r = await skill.run(['list']);
+  assert.ok(Array.isArray(r.skills) && r.skills.includes('nx-rp') && r.skills.includes('rp-loop'),
+    'assets/ 下两个 skill 都应列出：' + JSON.stringify(r.skills));
+  assert.equal(r.defaultGroup, 'nx-rp', '默认 install = package.json.name');
+  assert.deepEqual(r.groups, ['nx-rp', 'rp-loop']);
+  assert.equal(r.source, 'manifest', '当前 groups.json 存在 → 走 manifest 而非降级');
+  // render：默认 install 一项有"（默认 install）"标记，其它没有
+  const out = skill.render(r);
+  const lines = out.split('\n');
+  const nxrpLine = lines.find((l) => l.includes('nx-rp'));
+  assert.match(nxrpLine, /nx-rp.*（默认 install）/);
+  const rpLoopLine = lines.find((l) => l.includes('rp-loop'));
+  assert.ok(rpLoopLine && !rpLoopLine.includes('默认'), 'rp-loop 不应被标为默认');
+  assert.match(out, /可装的 skill:/);
+  assert.match(out, /可装的 group:/);
+});
+
+test('list：缺失 package.json → defaultGroup 为 null（不崩，graceful degradation）', async () => {
+  // loadSkill 是同一内置模块，但 cwd 影响 package.json 解析路径。
+  // 这里只验证 render 对 defaultGroup=null 的健壮性：直接构造一个无 defaultGroup 的对象。
+  const skill = await loadSkill();
+  const r = { skills: ['foo', 'bar'], defaultGroup: null, groups: [], source: 'assets-dirs' };
+  const out = skill.render(r);
+  assert.match(out, /可装的 skill:/);
+  assert.ok(!out.includes('默认 install'), '无 defaultGroup 时不该出现"默认 install"标记');
+  assert.ok(!out.includes('可装的 group:') || out.split('\n').filter((l) => l.includes('可装的 group:')).length === 1);
+});

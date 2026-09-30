@@ -528,6 +528,33 @@ function runGroups(argv) {
   }));
 }
 
+// `skill list`：列出所有可装的 skill + 默认安装谁 + 可装 group。
+//
+// 输出形态（render 渲染）：
+//   可装的 skill:
+//     * nx-rp           项目外部上下文管理（默认 install 装这个）
+//     * rp-loop         自引用循环（Ralph 技术）
+//   可装的 group:
+//     * nx-rp           nx-rp
+//     * rp-loop         rp-loop
+//
+// 数据来源：assets/ 目录扫描（兜底事实源）+ groups.json（默认 install 标记）。
+function runList() {
+  const skills = listAssetDirs().sort();
+  const { map, source } = loadGroups();
+  // 默认 install = groups.json 里 key 与 package.json 同名的那一条；缺失则 null。
+  // package.json 路径从当前 cwd 解析（CLI 的工作目录）——比 import.meta.dirname 硬推更稳。
+  const pkgName = (() => {
+    try {
+      return JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')).name;
+    } catch { return null; }
+  })();
+  const defaultGroup = pkgName && map[pkgName] ? pkgName : null;
+  const groups = availableGroups().sort();
+  return { skills, defaultGroup, groups, source };
+}
+
+
 async function cmdSkill(rest) {
   // 顶层 dispatcher：子命令在 rest[0] 里分发。
   // install 与 get 共用 parseSkillArgs / runInstall，避免参数解析与拷贝逻辑漂移。
@@ -536,12 +563,14 @@ async function cmdSkill(rest) {
   if (sub === 'install') return runInstall(argv);
   if (sub === 'get') return runGet(argv);
   if (sub === 'groups') return runGroups(argv);
+  if (sub === 'list') return runList();
   throw _invalidInput(`用法: nx-rp skill <子命令>
 可用: nx-rp skill install [name]    [--to <dir>] [--force]
       nx-rp skill install --group=<g> [--to <dir>] [--force]
       nx-rp skill get [name] [ref]  [--to <dir>]
       nx-rp skill get --group=<g> [ref] [--to <dir>]
       nx-rp skill groups
+      nx-rp skill list
 子命令: ${sub || '<空>'}`);
 }
 
@@ -578,7 +607,7 @@ export const BUILTINS = [
   {
     id: 'skill',
     cli: ['skill'],  // 顶层 dispatcher，子命令 install/get 在 rest 里分发
-    summary: 'skill 子命令（install / get / groups；--group=<名> 按 group 装）',
+    summary: 'skill 子命令（install / get / groups / list；--group=<名> 按 group 装）',
     run: cmdSkill,
     render: (r) => {
       if (!r) return '';
@@ -588,6 +617,23 @@ export const BUILTINS = [
         return r
           .map((g) => `${g.group.padEnd(w + 2)}${g.summary || `（${g.skills.join(', ')}）`}${g.source === 'manifest' ? '' : '（未读清单，按目录扫描）'}`)
           .join('\n');
+      }
+      // list 子命令：返回 { skills, defaultGroup, groups, source }
+      if (Array.isArray(r.skills) && Array.isArray(r.groups)) {
+        const skillLines = r.skills.map((s) => {
+          const tag = (s === r.defaultGroup) ? '（默认 install）' : '';
+          return `  * ${s.padEnd(14)}${tag}`;
+        });
+        const groupLines = r.groups.map((g) => `  * ${g}`);
+        const sourceNote = r.source === 'assets-dirs' ? '（未读清单，按目录扫描）' : '';
+        return [
+          '可装的 skill:',
+          ...skillLines,
+          '',
+          '可装的 group:',
+          ...groupLines,
+          sourceNote,
+        ].filter(Boolean).join('\n');
       }
       // install 三态（status/installed/skipped/replaced/conflict）走原有四分支渲染。
       // get 包装形态（带 .install 字段）走 prefix → doc → install summary 三段拼接。
