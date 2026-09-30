@@ -69,6 +69,92 @@ EOF
 `loop update --prompt -` 同理（改任务描述也常是多行）。管道也行：
 `cat 规范.md | nx-rp loop start - ...`。
 
+### AI 写 heredoc 的常见错误（实测过的，不是想当然）
+
+四种**实测**过的错误写法，**全都有人会建议不到标准**——下面的❌会出事，✅才安全：
+
+#### ❌ 1. 定界符不加引号 `<<EOF` —— **数据静默改写 / 命令执行**
+
+```bash
+nx-rp loop start - --session-id X <<EOF
+成本是 $100
+反引号 `echo 被展开了`
+EOF
+```
+
+shell 会展开 `$VAR` 和反引号。实测：
+- 原文 `成本是 $100\n反引号 \`echo 被展开了\`` → 存进 `成本是 00\n反引号 被展开了`
+- `$100` 变成 `00`（被当成 `$1` + `00`）；反引号里的命令真的被执行了
+
+→ 任务规范本要告诉 Agent 理解的东西，**被 shell 当代码执行了**。**安全风险 + 内容风险。**
+
+✅ **必须用 `<<'EOF'`**（带引号的定界符）—— 内容原样传入，不做任何展开。
+
+#### ❌ 2. flag 写在 heredoc 之后（换行隔开）
+
+```bash
+nx-rp loop start - --session-id X <<'EOF'
+任务
+EOF
+--max-iterations 3
+```
+
+shell 把 `EOF` 后面的 `--max-iterations 3` **当独立命令**执行：
+`--max-iterations: command not found`（退出码 127）。
+
+→ 循环照样建了，但**关键参数用默认值**，**完全无报错**。最阴险的失败模式。
+
+✅ flag 必须**在 heredoc 之前**：
+
+```bash
+nx-rp loop start - --max-iterations 3 --session-id X <<'EOF'
+任务
+EOF
+```
+
+#### ❌ 3. 定界符被缩进（漏写 `<<-`）
+
+```bash
+nx-rp loop start - <<'EOF'
+任务
+  EOF
+```
+
+bash 警告 `delimited by end-of-file` 然后**把所有后续命令文本全当 prompt 内容吞掉**——
+实测吞掉了脚本自己后续的 `EOF\necho "..."\ncd ...; rm -rf "$T" "$T2"`。
+
+→ 循环照样建了，**清理命令的字符串进了 prompt**。比 #2 更危险——把命令污染了 prompt 数据。
+
+✅ 用 `<<-EOF`（连字符）并**用 Tab 缩进**（不用空格）。或者干脆别缩进。
+
+#### ❌ 4. 忘记 `-` —— 安全（立刻报错退出）
+
+```bash
+nx-rp loop start --session-id X <<'EOF'
+任务
+EOF
+```
+
+CLI 立刻报 `缺少必填参数 <prompt>`（退出码 1）。**这是安全失败**——循环没建。
+
+✅ 别忘了 `-`。
+
+### 模板（直接复制）
+
+```bash
+nx-rp loop start - --max-iterations N --completion-promise "DONE" --session-id SID <<'EOF'
+任务描述（多行）
+
+验收：
+- 第一条
+- 第二条
+
+完成后输出 <promise>DONE</promise>
+EOF
+```
+
+`session-id` 强烈建议**显式传**——loop 的会话归属靠它认领，不显式时落进 CLAUDE_CODE_SESSION_ID 兜底，**跨会话布防时容易绑错**（这是另一个坑，不在本节展开）。
+
 ## 标准起手式
 
 ```bash
