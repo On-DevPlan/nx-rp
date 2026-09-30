@@ -47,6 +47,28 @@ nx-rp loop start "<任务描述>" \
   --max-iterations 20                # 轮次上限（默认 20；0 = 无限）
 ```
 
+### 长任务描述用 heredoc（多行必用）
+
+**任务描述通常是多行长规范，直接当参数传会出事**：Windows / Git Bash 下多行参数
+跨进程边界会被切开——实测 `loop start "$P" --max-iterations 7`（P 含两行）到程序里
+只剩第一行，**后面的 flag 全丢**（argv 个数 9 → 5），于是上限、承诺词静默变成默认值。
+
+把 `prompt` 传成 `-`，从 stdin 读，多行内容根本不经过 argv：
+
+```bash
+nx-rp loop start - --completion-promise "DONE" --max-iterations 20 <<'EOF'
+把 src/foo.js 的测试补到全绿。
+
+要求：
+1. 每次迭代先跑 npm test
+2. 失败则定位并修复
+3. 全通过后输出 <promise>DONE</promise>
+EOF
+```
+
+`loop update --prompt -` 同理（改任务描述也常是多行）。管道也行：
+`cat 规范.md | nx-rp loop start - ...`。
+
 ## 标准起手式
 
 ```bash

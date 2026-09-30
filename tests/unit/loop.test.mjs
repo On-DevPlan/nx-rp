@@ -846,3 +846,104 @@ test('updateLoop 改绑：必须同时清掉 env 残留的 claudeSessionId（改
   assert.equal(l2.sessionId, null);
   assert.equal(l2.claudeSessionId, 'ENV', '清显式绑定时 env 身份要保留');
 });
+
+// ============================================================
+// loop start 的 stdin 读入（`-`）—— 多行长规范的主通道
+// ============================================================
+//
+// 为什么需要：Windows / Git Bash 下多行参数跨 exec 边界会被切开。实测
+// `loop start "$P" --max-iterations 7`（P 含两行）到 node 只剩
+// ['loop','start','多行第一行']——后面的 flag 全丢（argv 个数 9 → 5）。
+// 走 heredoc → stdin，多行内容根本不进 argv。
+//
+// 隔离：子进程用 process.execPath（真实 node 二进制，绕开 Volta shim——
+// 它改 USERPROFILE 后会因找不到 LocalAppData 而失败）+ 自定义 USERPROFILE，
+// 状态文件落在临时 home，不碰真实 ~/.nx-rp。
+
+test('loop start -：从 stdin 读多行 prompt，且 flag 不被吞', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const tmpHome = await mkdtemp(join(tmpdir(), 'nxrp-stdin-'));
+  const projDir = join(tmp, 'proj');
+  await mkdir(projDir, { recursive: true });
+  const bin = join(ROOT, 'bin', 'nx-rp.mjs');
+  const input = '第一行规范\n第二行规范\n\n第四行（上一行是空行）\n';
+  try {
+    const r = spawnSync(process.execPath, [
+      bin, 'loop', 'start', '-',
+      '--max-iterations', '7', '--session-id', 'SID-STDIN', '--cwd', projDir,
+    ], {
+      input,
+      env: { ...process.env, USERPROFILE: tmpHome, HOME: tmpHome },
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+    assert.equal(r.status, 0, '子进程应成功；stderr=' + r.stderr);
+    assert.match(r.stdout, /轮次上限: 7/, 'flag 必须保住——这正是走 argv 时会丢的');
+    assert.match(r.stdout, /SID-STDIN/, 'sessionId 应生效');
+
+    // 状态文件在临时 home 下（hash 与主进程同算法，借用 loopsFileFor 的 hash 字段）
+    const { hash } = pathsMod.loopsFileFor(projDir);
+    const stateFile = join(tmpHome, '.nx-rp', 'loops', `${hash}.json`);
+    assert.ok(existsSync(stateFile), '状态应写在临时 home：' + stateFile);
+    const rec = JSON.parse(await readFile(stateFile, 'utf8')).loops.at(-1);
+    assert.equal(rec.maxIterations, 7);
+    assert.equal(rec.sessionId, 'SID-STDIN');
+    // 多行内容一字不差（末尾换行被 trim，这是 heredoc 的正常形态）
+    assert.equal(rec.prompt, input.trim(), '多行 prompt 必须完整保留');
+    assert.equal(rec.prompt.split('\n').length, 4, '含空行在内共 4 行');
+  } finally {
+    await rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('loop start -：stdin 为空 → 明确报错（不建空循环）', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const tmpHome = await mkdtemp(join(tmpdir(), 'nxrp-stdin2-'));
+  const projDir = join(tmp, 'proj');
+  await mkdir(projDir, { recursive: true });
+  try {
+    const r = spawnSync(process.execPath, [
+      join(ROOT, 'bin', 'nx-rp.mjs'), 'loop', 'start', '-', '--session-id', 'SID-EMPTY', '--cwd', projDir,
+    ], {
+      input: '',
+      env: { ...process.env, USERPROFILE: tmpHome, HOME: tmpHome },
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+    assert.notEqual(r.status, 0, '空 stdin 应失败');
+    assert.match(r.stderr + r.stdout, /stdin 里没读到内容/);
+    assert.match(r.stderr + r.stdout, /EOF/, '错误信息应给出 heredoc 用法示例');
+  } finally {
+    await rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('loop update --prompt -：从 stdin 改任务描述（多行规范的主通道）', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const tmpHome = await mkdtemp(join(tmpdir(), 'nxrp-upd-'));
+  const projDir = join(tmp, 'proj');
+  await mkdir(projDir, { recursive: true });
+  const bin = join(ROOT, 'bin', 'nx-rp.mjs');
+  const env = { ...process.env, USERPROFILE: tmpHome, HOME: tmpHome };
+  try {
+    const base = spawnSync(process.execPath,
+      [bin, 'loop', 'start', '初版', '--max-iterations', '3', '--session-id', 'SID-U', '--cwd', projDir],
+      { env, encoding: 'utf8', timeout: 60_000 });
+    assert.equal(base.status, 0, base.stderr);
+
+    const next = '改后第一行\n改后第二行\n\n改后第四行';
+    const r = spawnSync(process.execPath,
+      [bin, 'loop', 'update', '--id', 'loop-1', '--prompt', '-', '--cwd', projDir],
+      { input: next + '\n', env, encoding: 'utf8', timeout: 60_000 });
+    assert.equal(r.status, 0, 'stderr=' + r.stderr);
+    assert.match(r.stdout, /已更新/);
+
+    const { hash } = pathsMod.loopsFileFor(projDir);
+    const rec = JSON.parse(await readFile(join(tmpHome, '.nx-rp', 'loops', `${hash}.json`), 'utf8')).loops.at(-1);
+    assert.equal(rec.prompt, next, '多行内容必须完整保留');
+    assert.equal(rec.promptVersion, 2, '改 prompt 应升版号');
+    assert.deepEqual(rec.promptVersions.map((p) => p.text), ['初版'], '旧版归档为历史');
+  } finally {
+    await rm(tmpHome, { recursive: true, force: true });
+  }
+});

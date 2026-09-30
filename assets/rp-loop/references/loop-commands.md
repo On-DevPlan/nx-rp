@@ -30,6 +30,7 @@ nx-rp loop status
 
 ```
 nx-rp loop start "<prompt>" [--max-iterations N] [--completion-promise TEXT] [--session-id ID] [--cwd DIR]
+nx-rp loop start - [...] <<'EOF'      # prompt 传 `-` = 从 stdin 读（多行必用）
 nx-rp loop cancel [--id <loop-id>]
 ```
 
@@ -39,6 +40,32 @@ nx-rp loop cancel [--id <loop-id>]
 | `--completion-promise` | 无 | 完成短语。**字面量精确匹配**（区分大小写、空白归一） |
 | `--session-id` | 读 `CLAUDE_CODE_SESSION_ID` | 绑定会话；通常不用手传 |
 | `--cwd` | 当前 cwd | 作用目录（决定状态文件落到哪个哈希桶） |
+
+### prompt 传 `-`：多行长规范的主通道
+
+任务描述通常是多行（长规范、分点要求），**当命令行参数传会被平台切开**：
+
+```
+实测（Windows / Git Bash）：
+  loop start "$P" --max-iterations 7      # P = "第一行\n第二行"
+  → 程序收到的 argv = ['loop','start','第一行']     ← 只剩第一行
+    argv 个数 9 → 5，--max-iterations / --session-id 全丢
+  → 上限静默变成默认 20、承诺词变成 null
+```
+
+传 `-` 走 stdin，多行内容不经过 argv：
+
+```bash
+nx-rp loop start - --max-iterations 7 <<'EOF'
+多行任务描述
+第二行
+EOF
+```
+
+- 末尾换行会被 trim（heredoc 必带）；首尾空白对任务描述无意义
+- `loop update --prompt -` 同规则
+- 管道亦可：`cat spec.md | nx-rp loop start - ...`
+- stdin 为空 → 报 `INVALID_INPUT` 并给出用法，**不会建出空循环**
 
 `cancel` 不带 `--id` 时取消该目录下**全部活跃**循环。取消是**标记 `active:false` 而不删记录**，
 所以 `status` 还能看到历史。

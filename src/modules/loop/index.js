@@ -10,6 +10,36 @@
 // stop 是 cli-only（http: null）：它的入参形态是 hook 协议的 stdin 事件 JSON，
 // 面板没有对应交互。其余都 http 可达——面板与 CLI 走同一份逻辑。
 import * as service from './service.js';
+import { readStdin } from '../../core/hook-io.js';
+import { invalidInput } from '../../core/errors.js';
+
+// 从 stdin 读 prompt 的超时。heredoc / 管道都是毫秒级到达，这个上限只为
+// 「用户忘了重定向、stdin 挂着不关」兜底，正常路径远用不到。
+const STDIN_PROMPT_TIMEOUT_MS = 10_000;
+
+// `nx-rp loop start -` 的读入：把多行内容**从 stdin 拿**，不让它经过 argv。
+//
+// 为什么需要：Windows / Git Bash 下多行参数跨 exec 边界会被切开——
+// 实测 `loop start "$P" --max-iterations 7`（P 含两行）到 node 只剩
+// `['loop','start','多行第一行']`，后面的 flag 全丢（argv 个数 9 → 5）。
+// 走 heredoc → stdin 后，多行内容根本不进 argv，绕开这个平台顽疾：
+//
+//   nx-rp loop start - --max-iterations 7 <<'EOF'
+//   多行任务描述
+//   第二行
+//   EOF
+async function readPromptFromStdin() {
+  const raw = await readStdin(STDIN_PROMPT_TIMEOUT_MS);
+  // heredoc 末尾必带换行，去掉；任务描述的首尾空白无意义
+  const text = raw.trim();
+  if (!text) {
+    throw invalidInput(
+      'stdin 里没读到内容——`-` 表示从标准输入读 prompt。用法：\n' +
+      "  nx-rp loop start - <<'EOF'\n  你的任务描述\n  EOF",
+    );
+  }
+  return text;
+}
 
 // --limit 归一化：非正数/NaN → 50，合法值封顶 1000（与 hook-prompt 同规则）
 function normalizeLimit(v) {
@@ -68,7 +98,7 @@ export default {
       id: 'loop.start',
       cli: ['loop', 'start'],
       http: ['POST', '/api/loop/start'],
-      summary: '布防一个循环：把 prompt 写进状态，Stop hook 会反复灌回它直到完成',
+      summary: '布防一个循环：把 prompt 写进状态，Stop hook 会反复灌回它直到完成（prompt 传 `-` 从 stdin 读，便于多行）',
       args: [{ name: 'prompt', required: true }],
       flags: {
         maxIterations: { type: 'number', hint: '轮次上限（默认 20；0 或负数 = 无限）' },
@@ -76,14 +106,18 @@ export default {
         sessionId: { type: 'string', hint: '会话 ID（缺省读 CLAUDE_CODE_SESSION_ID 环境变量）' },
         cwd: { type: 'string', hint: '作用目录（默认当前 cwd）' },
       },
-      run: (ctx) => service.startLoop({
-        prompt: ctx.prompt,
-        // 原样透传：undefined → service 默认 20；显式 0 → 无限（不能被抬成 20）
-        maxIterations: ctx.maxIterations,
-        completionPromise: ctx.completionPromise || null,
-        sessionId: ctx.sessionId || null,
-        cwd: ctx.cwd || undefined,
-      }),
+      run: async (ctx) => {
+        // prompt === '-' → 从 stdin 读（多行场景的可靠通道，见 readPromptFromStdin）
+        const prompt = ctx.prompt === '-' ? await readPromptFromStdin() : ctx.prompt;
+        return service.startLoop({
+          prompt,
+          // 原样透传：undefined → service 默认 20；显式 0 → 无限（不能被抬成 20）
+          maxIterations: ctx.maxIterations,
+          completionPromise: ctx.completionPromise || null,
+          sessionId: ctx.sessionId || null,
+          cwd: ctx.cwd || undefined,
+        });
+      },
       render: (r) => {
         const l = r.loop;
         const max = l.maxIterations > 0 ? l.maxIterations : '∞（无限——建议设 --max-iterations 兜底）';
@@ -178,21 +212,24 @@ export default {
       id: 'loop.update',
       cli: ['loop', 'update'],
       http: ['POST', '/api/loop/update'],
-      summary: '改一条循环的任务参数（prompt / 轮次上限 / 完成承诺 / 会话）；因到上限而停的会随上限提高自动复活',
+      summary: '改一条循环的任务参数（prompt / 轮次上限 / 完成承诺 / 会话）；因到上限而停的会随上限提高自动复活（--prompt 传 `-` 从 stdin 读）',
       flags: {
         id: { type: 'string', required: true, hint: '循环 id（如 loop-1）' },
-        prompt: { type: 'string', hint: '新的任务描述（缺省不改）' },
+        prompt: { type: 'string', hint: '新的任务描述（缺省不改；传 `-` 从 stdin 读，便于多行）' },
         maxIterations: { type: 'number', hint: '新的轮次上限（0 = 无限；提高可复活已到上限的循环）' },
         completionPromise: { type: 'string', hint: '新的完成短语（传空串 = 清掉承诺）' },
         sessionId: { type: 'string', hint: '改绑会话（传空串 = 清掉显式绑定）' },
+        cwd: { type: 'string', hint: '作用目录（默认当前 cwd；管理别项目的循环时用）' },
       },
-      run: (ctx) => service.updateLoop({
+      run: async (ctx) => service.updateLoop({
         id: ctx.id,
-        prompt: ctx.prompt,
+        // 与 loop start 同规则：`-` 表示从 stdin 读（长规范天然多行）
+        prompt: ctx.prompt === '-' ? await readPromptFromStdin() : ctx.prompt,
         maxIterations: ctx.maxIterations,
         // 没传这个 flag 时保持原值；传了空串则清掉（undefined 与 '' 语义不同）
         completionPromise: ctx.completionPromise,
         sessionId: ctx.sessionId,
+        cwd: ctx.cwd || undefined,
       }),
       render: (r) => {
         if (r.skipped) return `无改动: ${r.id}`;
