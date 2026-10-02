@@ -102,7 +102,7 @@ export default {
       args: [{ name: 'prompt', required: true }],
       flags: {
         maxIterations: { type: 'number', hint: '轮次上限（默认 20；0 或负数 = 无限）' },
-        completionPromise: { type: 'string', hint: '完成短语——出现 <promise>该短语</promise> 即结束' },
+        completionPromise: { type: 'string', hint: '完成短语——出现 <promise>该短语</promise> 即结束；不传 = 仅轮次循环（跑到上限/手动取消才停）' },
         sessionId: { type: 'string', hint: '会话 ID（缺省读 CLAUDE_CODE_SESSION_ID 环境变量）' },
         cwd: { type: 'string', hint: '作用目录（默认当前 cwd）' },
       },
@@ -123,7 +123,7 @@ export default {
         const max = l.maxIterations > 0 ? l.maxIterations : '∞（无限——建议设 --max-iterations 兜底）';
         const promise = l.completionPromise
           ? `<promise>${l.completionPromise}</promise>（仅当陈述确实为真时才输出）`
-          : '（未设——循环只能靠轮次上限收口）';
+          : '（未设——仅轮次循环：跑到上限或手动 cancel 才停）';
         return `🔄 循环已布防: ${l.id}\n` +
           `轮次上限: ${max}\n` +
           `完成短语: ${promise}\n` +

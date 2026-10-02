@@ -65,7 +65,10 @@ export default function LoopView() {
   // 布防表单
   const [prompt, setPrompt] = useState('');
   const [maxIter, setMaxIter] = useState('20');
-  const [promise, setPromise] = useState('COMPLETE');
+  // 布防表单。完成短语默认**留空** = 仅轮次循环（跑到上限或手动取消才停）——
+  // 这是很多场景的合理默认（用户说"跑 10 轮就行"时根本不该编一个承诺词）；
+  // 需要提前结束时再填。
+  const [promise, setPromise] = useState('');
   // 会话绑定：默认留空 = 用服务端捕获的当前会话（status.currentSessionId）。
   // 之所以要能显式填：布防时拿不到身份的话，Stop hook 永远认领不到这条循环。
   const [sessInput, setSessInput] = useState('');
@@ -304,7 +307,7 @@ export default function LoopView() {
             <label className="muted" style={{ fontSize: 12, marginLeft: 12 }}>
               完成短语
               <input className="dlg-input" style={{ width: 140, marginLeft: 6, height: 'auto' }}
-                value={promise} onChange={(e) => setPromise(e.target.value)} placeholder="COMPLETE" />
+                value={promise} onChange={(e) => setPromise(e.target.value)} placeholder="（留空 = 仅轮次循环）" />
             </label>
             <label className="muted" style={{ fontSize: 12, marginLeft: 12 }}>
               会话
@@ -327,8 +330,9 @@ export default function LoopView() {
                 : <span className="bad">拿不到会话身份——留空布防会失败，请在上面的「会话」里显式填写 sessionId。</span>}
           </p>
           <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
-            完成判定：模型输出 <code>&lt;promise&gt;{promise || '完成短语'}&lt;/promise&gt;</code> 且与上面一字不差时结束。
-            每次迭代轮次 +1，到上限自动停止。
+            {promise.trim()
+              ? <>完成判定：模型输出 <code>&lt;promise&gt;{promise.trim()}&lt;/promise&gt;</code> 且一字不差时提前结束。每次迭代轮次 +1，到上限自动停止。</>
+              : <>完成判定：**仅轮次循环**——无结束短语，每轮 +1 直到上限（或手动取消）。适合"跑 N 轮就行"的任务；需要提前结束再填上面的短语。</>}
           </p>
         </div>
       </div>

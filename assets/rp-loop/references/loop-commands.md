@@ -37,7 +37,7 @@ nx-rp loop cancel [--id <loop-id>]
 | flag | 默认 | 语义 |
 | --- | --- | --- |
 | `--max-iterations` | `20` | 轮次上限。**显式 `0` = 无限**（不会被抬成 20） |
-| `--completion-promise` | 无 | 完成短语。**字面量精确匹配**（区分大小写、空白归一） |
+| `--completion-promise` | 无 | 完成短语。**字面量精确匹配**（区分大小写、空白归一）。**不传 = 仅轮次循环**——永不判定完成，跑到上限或手动 cancel 才停；每轮 systemMessage 明示「未设完成承诺」。用户只要轮次循环 / 没提结束关键词时就不传，不要自己发明承诺词 |
 | `--session-id` | 读 `CLAUDE_CODE_SESSION_ID` | 绑定会话；通常不用手传 |
 | `--cwd` | 当前 cwd | 作用目录（决定状态文件落到哪个哈希桶） |
 

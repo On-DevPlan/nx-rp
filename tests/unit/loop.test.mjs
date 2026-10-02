@@ -947,3 +947,40 @@ test('loop update --prompt -：从 stdin 改任务描述（多行规范的主通
     await rm(tmpHome, { recursive: true, force: true });
   }
 });
+
+test('仅轮次循环（无 promise）：布防 → 每轮 block 且明示未设承诺 → 上限收口（全链路）', async () => {
+  const { startLoop, stopHookRaw, listLoops, listLoopLog } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  // 用户说"跑 3 轮就行"：不传 completionPromise
+  await startLoop({ prompt: '每轮优化一点', sessionId: 'S1', maxIterations: 3, cwd });
+  let [l] = await listLoops({ cwd });
+  assert.equal(l.completionPromise, null, '不传即 null——不自己发明承诺词');
+
+  const p = await writeTranscript('rounds.jsonl', [assistantLine('干眼中')]);
+
+  // 第 1、2 轮：block 且 systemMessage 明示未设承诺（模型不会误以为要输出承诺词）
+  for (let expectIter = 2; expectIter <= 3; expectIter++) {
+    const out = await stopHookRaw(stopEvent({ cwd, transcriptPath: p, sessionId: 'S1' }));
+    assert.equal(out.decision, 'block', `第 ${expectIter - 1} 次触发应 block`);
+    assert.match(out.systemMessage, /未设完成承诺/, '每轮都明示仅轮次模式');
+    assert.ok(!out.systemMessage.includes('<promise>'), '不应诱导输出承诺词');
+  }
+
+  // 第 3 次触发：到上限，收口
+  const fin = await stopHookRaw(stopEvent({ cwd, transcriptPath: p, sessionId: 'S1' }));
+  assert.equal(fin.decision, undefined, '超限不应 block');
+  assert.match(fin.systemMessage, /上限/);
+  [l] = await listLoops({ cwd });
+  assert.equal(l.active, false);
+  assert.equal(l.endReason, 'max-iterations', '仅轮次模式的唯一结束方式');
+
+  // 审计链完整：2 轮 continue + 1 轮 max-iterations
+  const logs = await listLoopLog({ cwd });
+  assert.deepEqual(logs.map((r) => r.decision), ['max-iterations', 'continue', 'continue']);
+});
+
+test('CLI：不传 --completion-promise 的 hint 明示"仅轮次循环"语义', async () => {
+  const { ACTIONS } = await import(pathToFileURL(join(ROOT, 'src', 'runtime', 'registry.js')).href);
+  const act = ACTIONS.find((a) => a.id === 'loop.start');
+  assert.match(act.flags.completionPromise.hint, /仅轮次循环/, 'hint 要把无承诺模式作为一等用法表达');
+});
