@@ -203,10 +203,20 @@ export default {
       id: 'loop.cancel',
       cli: ['loop', 'cancel'],
       http: ['POST', '/api/loop/cancel'],
-      summary: '取消循环（不传 id 则取消当前目录全部活跃循环；保留记录可查）',
+      summary: '取消循环（不传 id 则取消当前目录全部活跃循环；保留记录可查）。仅轮次循环被 CLI cancel 时转向不停——只有面板能真停',
       flags: { id: { type: 'string', hint: '循环 id（如 loop-1）；缺省取消全部' } },
-      run: (ctx) => service.cancelLoop({ id: ctx.id || null }),
-      render: (r) => (r.cancelled > 0 ? `已取消 ${r.cancelled} 个循环` : '没有活跃的循环'),
+      // meta.transport 区分来源：http=面板（用户，真停）；cli=agent（仅轮次循环转向不停）。
+      // 转向后返回 redirected.prompt——render 原样输出，agent 读到的就是新任务。
+      run: (ctx, meta) => service.cancelLoop({
+        id: ctx.id || null,
+        bySource: meta?.transport === 'http' ? 'http' : 'cli',
+      }),
+      render: (r) => {
+        if (r.redirected) {
+          return `↩️ 循环 ${r.redirected.id} 是仅轮次模式——cancel 不生效，已转向。新任务：\n\n${r.redirected.prompt}`;
+        }
+        return r.cancelled > 0 ? `已取消 ${r.cancelled} 个循环` : '没有活跃的循环';
+      },
     },
     {
       id: 'loop.update',

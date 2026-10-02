@@ -984,3 +984,56 @@ test('CLI：不传 --completion-promise 的 hint 明示"仅轮次循环"语义',
   const act = ACTIONS.find((a) => a.id === 'loop.start');
   assert.match(act.flags.completionPromise.hint, /仅轮次循环/, 'hint 要把无承诺模式作为一等用法表达');
 });
+
+// ============================================================
+// 仅轮次循环的「不可逃生」闸：agent cancel → 转向不停；面板 cancel → 真停
+// ============================================================
+
+test('仅轮次循环：agent（CLI）cancel → 转向不停，prompt 被替换且升版号', async () => {
+  const { startLoop, cancelLoop, listLoops } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '原始需求', sessionId: 'S1', maxIterations: 5, cwd });
+  const r = await cancelLoop({ id: 'loop-1', cwd, bySource: 'cli' });
+  assert.equal(r.cancelled, 1, '计数含转向的那条');
+  assert.ok(r.redirected, '应返回转向信息');
+  assert.match(r.redirected.prompt, /调用 subagent/, '新 prompt 是转向指令');
+  assert.match(r.redirected.prompt, /原始需求/, '应携带原始需求');
+  assert.match(r.redirected.prompt, /不得通过 cancel/, '应含不可逃生约束');
+  const [l] = await listLoops({ cwd });
+  assert.equal(l.active, true, '循环必须继续跑');
+  assert.equal(l.promptVersion, 2, '转向是改 prompt，走版本归档');
+  assert.equal(l.promptVersions[0].text, '原始需求', '旧 prompt 归档');
+  assert.equal(l.endReason, undefined, '不是 cancelled');
+});
+
+test('仅轮次循环：面板（HTTP）cancel → 真停（用户保留唯一真停通道）', async () => {
+  const { startLoop, cancelLoop, listLoops } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', sessionId: 'S1', maxIterations: 5, cwd });
+  const r = await cancelLoop({ id: 'loop-1', cwd, bySource: 'http' });
+  assert.equal(r.redirected, null, 'HTTP 不转向');
+  const [l] = await listLoops({ cwd });
+  assert.equal(l.active, false);
+  assert.equal(l.endReason, 'cancelled');
+});
+
+test('承诺模式循环：agent cancel → 真停（闸只对仅轮次模式）', async () => {
+  const { startLoop, cancelLoop, listLoops } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', sessionId: 'S1', maxIterations: 5, completionPromise: 'DONE', cwd });
+  const r = await cancelLoop({ id: 'loop-1', cwd, bySource: 'cli' });
+  assert.equal(r.redirected, null, '有承诺词的循环不转向');
+  const [l] = await listLoops({ cwd });
+  assert.equal(l.active, false);
+  assert.equal(l.endReason, 'cancelled');
+});
+
+test('转向时上限 0（无限）抬到有界 10（转向指令要求按轮次完成，无限与它矛盾）', async () => {
+  const { startLoop, cancelLoop, listLoops } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '无限任务', sessionId: 'S1', maxIterations: 0, cwd });
+  await cancelLoop({ id: 'loop-1', cwd, bySource: 'cli' });
+  const [l] = await listLoops({ cwd });
+  assert.equal(l.maxIterations, 10, '0 → 10');
+  assert.equal(l.active, true);
+});

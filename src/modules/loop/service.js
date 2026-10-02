@@ -368,22 +368,63 @@ export async function listLoops({ all = false, limit = 50, cwd = cwdDir() } = {}
 
 // 取消：标记 inactive 而不删记录（保留可查历史，等价于 ralph 的 /cancel-ralph）。
 // 不传 id 时取消该 cwd 下**全部**活跃的——面板「停用」按钮的语义。
-export async function cancelLoop({ id = null, cwd = cwdDir() } = {}) {
+//
+// 仅轮次循环的「不可逃生」闸（bySource === 'http' 即用户在面板操作才真停）：
+//   agent 经 CLI cancel 一个**无承诺词**的活跃循环时，**不真停**——而是把 prompt
+//   替换为转向指令（调 subagent 重生需求、按轮次完成、不可逃生）并让循环继续。
+//   返回值带 redirectPrompt，CLI render 把它原样输出——agent 读到的就是新任务。
+//   为什么：无承诺循环的唯一合法终点是轮次上限；若 agent 能用 cancel 提前脱身，
+//   「不可逃生」就是空话。用户保留面板这条真停通道（HTTP 侧）。
+// bySource 缺省 'direct'（真停）：只有真实调用路径（cli/http）才显式传。
+// 这让「程序化取消」（其他代码、测试）保持旧语义——转向闸只对
+// 「agent 经 CLI 真实逃生」这一条路生效，不会误伤程序内部调用。
+export async function cancelLoop({ id = null, cwd = cwdDir(), bySource = 'direct' } = {}) {
   const { file } = loopsFileFor(cwd) || {};
   if (!file) return { status: 'ok', cancelled: 0 };
   const state = await readState(file);
   let n = 0;
+  let redirected = null; // 被转向的那条（仅轮次 + agent 来源）
   const now = new Date().toISOString();
   for (const l of state.loops) {
     if (l.active === false) continue;
     if (id && l.id !== id) continue;
+    const roundOnly = !l.completionPromise;
+    if (roundOnly && bySource === 'cli') {
+      // 转向：不真停，替换 prompt。上限 0（无限）也一并抬到有界——
+      // 转向指令本身要求「按轮次完成」，无限循环与它矛盾。
+      // 顺序与 updateLoop 一致：**先归档旧版**再覆盖——版本历史里存的必须是
+      // 被替换掉的那版（原始需求），否则转向后没人知道原始任务是什么。
+      const prevVersion = Number(l.promptVersion) || 1;
+      l.promptVersions = [
+        ...(Array.isArray(l.promptVersions) ? l.promptVersions : []),
+        { v: prevVersion, text: l.prompt, changedAt: now },
+      ].slice(-PROMPT_HISTORY_KEEP);
+      l.prompt = REDIRECT_PROMPT(l);
+      l.promptVersion = prevVersion + 1;
+      if (!Number(l.maxIterations)) l.maxIterations = 10;
+      redirected = { id: l.id, prompt: l.prompt };
+      n++;
+      continue;
+    }
     l.active = false;
     l.endReason = 'cancelled';
     l.endedAt = now;
     n++;
   }
   if (n > 0) await writeState(file, state);
-  return { status: 'ok', cancelled: n };
+  return { status: 'ok', cancelled: n, redirected };
+}
+
+// 转向指令：agent 试图逃生时被灌回的新任务。
+function REDIRECT_PROMPT(l) {
+  return [
+    `调用 subagent 根据原始需求重新生成一份准确、可执行的任务描述，然后按轮次逐项完成（当前第 ${l.iteration}/${l.maxIterations} 轮）。`,
+    '原始需求：',
+    '---',
+    l.prompt,
+    '---',
+    '约束：本循环无结束关键词，唯一合法终点是轮次上限。不得通过 cancel / 修改承诺词等方式提前退出；每轮结束回合即进入下一轮。',
+  ].join('\n');
 }
 
 // 改一条循环的任务参数。**为「动态规划」而设**：循环跑起来目标会变——
