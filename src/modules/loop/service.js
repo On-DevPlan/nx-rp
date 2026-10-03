@@ -699,13 +699,21 @@ async function stopHookInner(raw) {
     if (!loop.sessionId && payloadSession) loop.sessionId = payloadSession;
 
     // 提取最后一条 assistant 文本 → 找 promise。
-    // transcript_path 优先取解析后的字段，坏了再从原始 payload 抢救。
+    //
+    // 来源优先级（官方文档明确建议）：
+    //   1. payload 的 last_assistant_message —— CC 直接喂给 hook 的最终回复文本。
+    //      transcript 是**异步写入**的，Stop 触发时可能还没包含本轮最新消息
+    //      （文档：hook 需要最终助手文本时"应使用 last_assistant_message，
+    //      而不是读取转录"）。
+    //   2. transcript 尾部解析 —— 老版本 CC 没有该字段时的 fallback。
     //
     // 放在所有判定分支**之前**：终止分支（超限 / 命中）也要把这一轮的成果记进
     // 审计——那恰恰是最值得复盘的一轮。三个分支共用这一份 text。
     const transcriptPath = (typeof event.transcript_path === 'string' && event.transcript_path)
       || salvageTranscriptPath(raw);
-    const text = await readLastAssistantText(transcriptPath);
+    const lam = typeof event.last_assistant_message === 'string' ? event.last_assistant_message : null;
+    const textSource = lam !== null ? 'payload' : 'transcript';
+    const text = lam !== null ? lam : await readLastAssistantText(transcriptPath);
     const promise = extractPromise(text);
     const capped = text === null ? null : capBytes(text, AUDIT_TEXT_CAP);
     const textFields = {
@@ -713,6 +721,9 @@ async function stopHookInner(raw) {
       lastText: capped ? capped.text : null,
       lastTextTruncated: capped ? capped.truncated : false,
       lastTextChars: text === null ? null : text.length,
+      // 文本来源：payload（last_assistant_message，可靠）| transcript（解析，可能滞后）。
+      // 面板/审计靠它归因"这轮为什么没闭环"——transcript 滞后时 chars 可能为 0/null。
+      textSource,
       // 列表行用的一句话摘要。文本本就没有换行的（单行回复）不重复存一份。
       lastTextHead: text === null ? null
         : (capped.text.includes('\n') ? oneLine(capped.text, 300) : undefined),
@@ -758,12 +769,18 @@ async function stopHookInner(raw) {
       ? `完成时输出 <promise>${expected}</promise>（仅在确实为真时——不要为了退出而说谎）`
       : '未设完成承诺，循环只能靠轮次上限收口';
     // CC 的 8 连续续杯上限警告：stopHookActive=true 时本轮是某次连续拦下。
-    // 文档原话：连续 8 次后 CC 强制结束回合。这条提示让 agent 当下就感知到
-    // 循环有被掐的风险，而不是死到下一轮才发现。需要更长循环时由人介入
-    //（改 prompt / 拉 CLAUDE_* 环境变量上限），不能从 hook 里突破。
+    // 文档原话：连续 8 次后 CC 强制结束回合；上限可用 CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+    // 提高。这条提示让 agent 当下就感知到循环有被掐的风险，而不是死到下一轮才发现。
+    // 需要更长循环时由人介入（改 prompt / 设该环境变量），不能从 hook 里突破。
     const contWarning = stopHookActive
-      ? ' ⚠ 本会话已连续多次被拦，CC 会在 8 次时强制结束——若需要更长循环请人工介入（调 prompt / CLAUDE_* 上限）'
+      ? ' ⚠ 本会话已连续多次被拦，CC 会在 8 次时强制结束——需要更长循环请人工介入（调 prompt 或设 CLAUDE_CODE_STOP_HOOK_BLOCK_CAP）'
       : '';
+    // 子 agent 归因字段：SubagentStop 事件带 agent_id/agent_type；CC 的内部功能
+    //（提示词建议、/btw）也会触发 SubagentStop，其 agent_type 可能为空串。
+    // 记进审计以便事后区分「真子 agent 的产出」与「CC 内部 agent 的旁支」。
+    const agentFields = {};
+    if (typeof event.agent_id === 'string' && event.agent_id) agentFields.agentId = event.agent_id;
+    if (typeof event.agent_type === 'string') agentFields.agentType = event.agent_type;
     await audit(cwd, {
       loopId: loop.id, iteration: next, decision: 'continue', promise,
       // textFields 同时记了摘要文本与真实字数：面板上字数能一眼看出 transcript
@@ -772,6 +789,7 @@ async function stopHookInner(raw) {
       // 续杯警告：只在 stopHookActive=true 时记。文档：「当 Claude Code 因 stop hook
       // 继续时为 true」——可用来事后算出"本轮是连续 N 次中的第几个"。
       ...(stopHookActive ? { stopHookActive: true } : {}),
+      ...agentFields,
       sessionId,
     });
     return {

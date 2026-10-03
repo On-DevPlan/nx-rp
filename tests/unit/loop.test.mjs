@@ -1082,3 +1082,96 @@ test('8 连续续杯：stop_hook_active 缺省/false → 审计不写 stopHookAc
   assert.notEqual('stopHookActive' in log, true,
     '字段不存在意味着历史条目保持干净的 key 集合');
 });
+
+// ============================================================
+// last_assistant_message 优先（官方建议：transcript 异步写入可能滞后）
+// ============================================================
+
+test('last_assistant_message：payload 有值时优先于 transcript（官方建议的可靠来源）', async () => {
+  const { startLoop, stopHookRaw, listLoopLog } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', completionPromise: 'DONE', maxIterations: 5, sessionId: 'S1', cwd });
+  // transcript 故意写**旧**内容（模拟异步写入滞后：最新消息还没落盘）
+  const p = await writeTranscript('lam.jsonl', [assistantLine('这是滞后的旧内容 <promise>DONE</promise>')]);
+  // payload 带真实的最新消息（不含 promise）
+  const out = await stopHookRaw(JSON.stringify({
+    hook_event_name: 'Stop', session_id: 'S1', transcript_path: p, cwd,
+    stop_hook_active: false, last_assistant_message: '最新回复：还在干，没完成',
+  }));
+  assert.equal(out.decision, 'block', 'payload 的最新文本不含 promise → 不该判完成');
+  const [log] = await listLoopLog({ cwd });
+  assert.equal(log.textSource, 'payload', '审计记下来源是 payload');
+  assert.equal(log.lastText, '最新回复：还在干，没完成', '用的是 payload 文本而非滞后的 transcript');
+});
+
+test('last_assistant_message：payload 命中 promise 照样闭环', async () => {
+  const { startLoop, stopHookRaw, listLoops } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', completionPromise: 'DONE', maxIterations: 5, sessionId: 'S1', cwd });
+  // transcript 滞后（旧内容无 promise），最新文本在 payload 里
+  const p = await writeTranscript('lam2.jsonl', [assistantLine('滞后内容')]);
+  const out = await stopHookRaw(JSON.stringify({
+    hook_event_name: 'Stop', session_id: 'S1', transcript_path: p, cwd,
+    last_assistant_message: '完成了 <promise>DONE</promise>',
+  }));
+  assert.ok(out?.systemMessage?.includes('完成'), 'payload 里的 promise 必须能闭环: ' + JSON.stringify(out));
+  const [l] = await listLoops({ cwd });
+  assert.equal(l.endReason, 'promise');
+});
+
+test('last_assistant_message：缺失时回退 transcript 解析（老版本 CC 兼容）', async () => {
+  const { startLoop, stopHookRaw, listLoopLog } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', completionPromise: 'DONE', maxIterations: 5, sessionId: 'S1', cwd });
+  const p = await writeTranscript('lam3.jsonl', [assistantLine('transcript 里的 <promise>DONE</promise>')]);
+  const out = await stopHookRaw(JSON.stringify({
+    hook_event_name: 'Stop', session_id: 'S1', transcript_path: p, cwd,
+    // 不带 last_assistant_message —— 老版本 CC
+  }));
+  assert.ok(out?.systemMessage?.includes('完成'), 'fallback 到 transcript 应照常闭环');
+  const [log] = await listLoopLog({ cwd });
+  assert.equal(log.textSource, 'transcript');
+});
+
+test('审计记子 agent 归因字段：agent_id / agent_type（含空串 agent_type 的内部 agent）', async () => {
+  const { startLoop, stopHookRaw, listLoopLog } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', sessionId: 'S1', maxIterations: 5, cwd });
+  const p = await writeTranscript('ag.jsonl', [assistantLine('干活中')]);
+
+  // 真子 agent：agent_id + agent_type 都有
+  await stopHookRaw(JSON.stringify({
+    hook_event_name: 'SubagentStop', session_id: 'S1', transcript_path: p, cwd,
+    agent_id: 'def456', agent_type: 'Explore',
+  }));
+  let [log] = await listLoopLog({ cwd });
+  assert.equal(log.agentId, 'def456');
+  assert.equal(log.agentType, 'Explore');
+
+  // CC 内部 agent：agent_type 是空串（文档：会话未用 Agent 运行时为空字符串）
+  await stopHookRaw(JSON.stringify({
+    hook_event_name: 'SubagentStop', session_id: 'S1', transcript_path: p, cwd,
+    agent_id: 'internal-1', agent_type: '',
+  }));
+  [log] = await listLoopLog({ cwd });
+  assert.equal(log.agentId, 'internal-1');
+  assert.equal(log.agentType, '', '空串也记——区分「内部 agent」与「没这个字段」');
+
+  // 普通 Stop：不写这两个字段
+  await stopHookRaw(JSON.stringify({
+    hook_event_name: 'Stop', session_id: 'S1', transcript_path: p, cwd,
+  }));
+  [log] = await listLoopLog({ cwd });
+  assert.ok(!('agentId' in log), '普通 Stop 不该有 agentId 字段');
+});
+
+test('警告文案含 CLAUDE_CODE_STOP_HOOK_BLOCK_CAP 环境变量名（自服务路径）', async () => {
+  const { startLoop, stopHookRaw } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', sessionId: 'S1', maxIterations: 5, cwd });
+  const p = await writeTranscript('cap.jsonl', [assistantLine('干活中')]);
+  const out = await stopHookRaw(JSON.stringify({
+    hook_event_name: 'Stop', session_id: 'S1', transcript_path: p, cwd, stop_hook_active: true,
+  }));
+  assert.match(out.systemMessage, /CLAUDE_CODE_STOP_HOOK_BLOCK_CAP/);
+});
