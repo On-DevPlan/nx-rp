@@ -667,6 +667,9 @@ async function stopHookInner(raw) {
   const event = parseHookEvent(raw);
   const cwd = typeof event.cwd === 'string' && event.cwd ? event.cwd : cwdDir();
   const sessionId = deriveSessionId(event, cwd);
+  // CC 的连续续杯标志：true 时本回合已是第 N 次被 hook 拦下（CC 8 次后强制收口）。
+  // 解析阶段就提取，避免各分支重复判空。
+  const stopHookActive = event?.stop_hook_active === true;
 
   // 事件名有值但不是 Stop/SubagentStop → 本 hook 被挂错了事件，放行（防御性）。
   //
@@ -754,17 +757,27 @@ async function stopHookInner(raw) {
     const hint = expected
       ? `完成时输出 <promise>${expected}</promise>（仅在确实为真时——不要为了退出而说谎）`
       : '未设完成承诺，循环只能靠轮次上限收口';
+    // CC 的 8 连续续杯上限警告：stopHookActive=true 时本轮是某次连续拦下。
+    // 文档原话：连续 8 次后 CC 强制结束回合。这条提示让 agent 当下就感知到
+    // 循环有被掐的风险，而不是死到下一轮才发现。需要更长循环时由人介入
+    //（改 prompt / 拉 CLAUDE_* 环境变量上限），不能从 hook 里突破。
+    const contWarning = stopHookActive
+      ? ' ⚠ 本会话已连续多次被拦，CC 会在 8 次时强制结束——若需要更长循环请人工介入（调 prompt / CLAUDE_* 上限）'
+      : '';
     await audit(cwd, {
       loopId: loop.id, iteration: next, decision: 'continue', promise,
       // textFields 同时记了摘要文本与真实字数：面板上字数能一眼看出 transcript
       // 解析是否正常（解析失效时两者都是 null）
       ...textFields,
+      // 续杯警告：只在 stopHookActive=true 时记。文档：「当 Claude Code 因 stop hook
+      // 继续时为 true」——可用来事后算出"本轮是连续 N 次中的第几个"。
+      ...(stopHookActive ? { stopHookActive: true } : {}),
       sessionId,
     });
     return {
       decision: 'block',
       reason: loop.prompt,
-      systemMessage: `🔄 Loop ${loop.id} 第 ${next}/${max > 0 ? max : '∞'} 轮 | ${hint}`,
+      systemMessage: `🔄 Loop ${loop.id} 第 ${next}/${max > 0 ? max : '∞'} 轮 | ${hint}${contWarning}`,
     };
   } finally {
     await release();

@@ -1043,3 +1043,42 @@ test('readLastAssistantText：isSidechain 行不再被跳过（最后一条可�
   assert.equal(await readLastAssistantText(p), '子 agent 交付 <promise>DONE</promise>',
     '最后一条消息即使是子 agent 的，也必须是完成判定的依据');
 });
+
+test('8 连续续杯：stop_hook_active=true → 审计记 stopHookActive + systemMessage 含警告', async () => {
+  const { startLoop, stopHookRaw, listLoopLog } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', sessionId: 'S1', maxIterations: 5, cwd });
+  const p = await writeTranscript('cont.jsonl', [assistantLine('干活中')]);
+
+  const out = await stopHookRaw(JSON.stringify({
+    hook_event_name: 'Stop', session_id: 'S1', transcript_path: p, cwd,
+    stop_hook_active: true,  // CC 在文档里说"true when already continuing as a result of a stop hook"
+  }));
+  assert.equal(out.decision, 'block', '续杯事件仍正常 block，不放行');
+  assert.match(out.systemMessage, /⚠ 本会话已连续多次被拦/);
+  assert.match(out.systemMessage, /CC 会在 8 次时强制结束/);
+
+  const [log] = await listLoopLog({ cwd });
+  assert.equal(log.stopHookActive, true, '审计记 stopHookActive=true 字段便于事后归因');
+  assert.equal(log.decision, 'continue');
+});
+
+test('8 连续续杯：stop_hook_active 缺省/false → 审计不写 stopHookActive 字段（不污染历史数据）', async () => {
+  const { startLoop, stopHookRaw, listLoopLog } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', sessionId: 'S1', maxIterations: 5, cwd });
+  const p = await writeTranscript('cont2.jsonl', [assistantLine('干活中')]);
+
+  // 普通 Stop（stop_hook_active: false）——大多数情况
+  const out = await stopHookRaw(JSON.stringify({
+    hook_event_name: 'Stop', session_id: 'S1', transcript_path: p, cwd, stop_hook_active: false,
+  }));
+  assert.equal(out.decision, 'block');
+  assert.doesNotMatch(out.systemMessage, /⚠/);
+
+  const [log] = await listLoopLog({ cwd });
+  assert.notEqual(log.stopHookActive, true,
+    'stop_hook_active=false 时不应写字段——避免污染历史记录的形状');
+  assert.notEqual('stopHookActive' in log, true,
+    '字段不存在意味着历史条目保持干净的 key 集合');
+});
