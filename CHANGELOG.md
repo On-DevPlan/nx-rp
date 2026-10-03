@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.9.9 / 2026-10-02
+
+- **loop：与官方 hook 语义对齐——闭环优先 + 8 续杯感知**（修复型 + 特性型）
+  - **拆掉 SubagentStop / 子 agent 过滤闸**（闭环优先于轮次纯度）
+    - 旧行为：`SubagentStop` 事件与带 `agent_id` 等标识的事件一律放行；
+      transcript 里 `isSidechain=true` 的行跳过
+    - 问题：一回合的最后一条消息完全可能是 subagent 的产出（含 `<promise>`），
+      过滤它循环就永远无法闭环
+    - 新行为（对齐 ralph：不过滤任何事件）：`hook_event_name` 是唯一判据，
+      `SubagentStop` 与 `Stop` 走同一条判决链；`readLastAssistantText`
+      不再跳过 `isSidechain` 行
+  - **取文本优先 `last_assistant_message`**（修「偶尔不闭环」的另一半根因）
+    - 官方文档明确：转录文件**异步写入可能滞后**，hook 触发时可能还没包含
+      本轮最新消息；需要最终助手文本的 hook 应使用 `last_assistant_message`
+      而不是读取转录
+    - 新优先级：payload 的 `last_assistant_message` → transcript 解析
+      （老版本 CC fallback）；审计记 `textSource`（payload | transcript）供归因
+  - **8 连续续杯上限感知**
+    - 官方文档：stop hook 连续 8 次让轮次继续后，CC 会覆盖下一次阻止并结束回合；
+      上限可用 `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` 提高
+    - 续杯事件（`stop_hook_active=true`）→ systemMessage 加警告（含该环境变量名，
+      给出自服务路径）；审计记 `stopHookActive: true`（false/缺省不写，不污染历史条目形状）
+  - **审计记子 agent 归因字段**：`agentId` / `agentType`（SubagentStop 带；
+    CC 内部功能也触发 SubagentStop 且 `agent_type` 可能为空串——空串也记，
+    区分「内部 agent」与「无此字段」）；普通 Stop 不写
+  - 测试 11 条新增（SubagentStop 同等判决 / payload 优先含滞后对抗用例 /
+    fallback / 归因三态 / 警告含环境变量名 / 续杯两态）；全量 232 单测 + 7 smoke 全绿
+  - 附：官方 Hooks 参考快照入库（`.claude/www/claudedoc`），作为 hook 语义的本地权威依据
+
 ## 0.9.8 / 2026-10-02
 
 > 0.9.7 的 CI 报成功、provenance 已签，但 npm registry 上从未出现该版本（registry API 权威确认 latest 停在 0.9.6）。本次 0.9.8 = 0.9.7 内容 + 下述新特性，重跑发布。
