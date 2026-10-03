@@ -147,13 +147,14 @@ test('readLastAssistantText：空文本块不往前翻（防翻出上一轮的�
   assert.equal(await readLastAssistantText(p), '', '必须返回空串，不能回退取到旧 promise');
 });
 
-test('readLastAssistantText：跳过 isSidechain（子 agent 的回复不算完成信号）', async () => {
+test('readLastAssistantText：isSidechain 行不再被跳过（最后一条可能是 subagent 的）', async () => {
   const { readLastAssistantText } = await import(serviceUrl());
   const p = await writeTranscript('t5.jsonl', [
     assistantLine('主 agent 的文本'),
     assistantLine('子 agent 说 <promise>DONE</promise>', { isSidechain: true }),
   ]);
-  assert.equal(await readLastAssistantText(p), '主 agent 的文本');
+  assert.equal(await readLastAssistantText(p), '子 agent 说 <promise>DONE</promise>',
+    '最后一条即使是子 agent 的，也是完成判定的依据（闭环优先）');
 });
 
 test('readLastAssistantText：坏行 / 非 assistant 行 / 不存在文件 全部安全降级', async () => {
@@ -265,60 +266,6 @@ test('Stop hook：旧版遗留的无名 loop 不被认领（收养回退已删�
   const [l] = await listLoops({ cwd });
   assert.equal(l.sessionId, null, '不该被回填 sessionId');
   assert.equal(l.active, true, '不该被改动');
-});
-
-// 带子 agent 标识的 Stop 事件。子 agent 与主 agent **共享 session_id**（实测），
-// 所以只给 sessionId 是不够的——必须带上 agent 标识才能与主 agent 区分开。
-function subagentStopEvent({ cwd, transcriptPath, sessionId = 'S1', key = 'agent_id' }) {
-  return JSON.stringify({
-    hook_event_name: 'Stop',
-    session_id: sessionId,
-    [key]: 'a91e478bdb60245ab',
-    transcript_path: transcriptPath,
-    cwd,
-    stop_hook_active: false,
-  });
-}
-
-test('Stop hook：子 agent 事件不认领——不推进轮次、不写状态、不写审计', async () => {
-  const { startLoop, stopHookRaw, listLoops } = await import(serviceUrl());
-  const cwd = join(tmp, 'proj');
-  await startLoop({ prompt: '任务', completionPromise: 'DONE', maxIterations: 5, sessionId: 'S1', cwd });
-
-  const p = await writeTranscript('sub.jsonl', [assistantLine('子 agent 随口说了一句 <promise>DONE</promise>')]);
-  const before = (await listLoops({ cwd })).find((l) => l.active);
-
-  // 两种拼写都要拦住（hook payload 里叫什么没实测过）
-  for (const key of ['agent_id', 'agentId']) {
-    const out = await stopHookRaw(subagentStopEvent({ cwd, transcriptPath: p, sessionId: 'S1', key }));
-    assert.equal(out, null, `带上 ${key} 的子 agent 事件必须放行`);
-  }
-
-  const after = (await listLoops({ cwd })).find((l) => l.id === before.id);
-  assert.equal(after.iteration, before.iteration, '轮次不该被子 agent 推进');
-  assert.equal(after.active, true, '循环不该被子 agent 提前判完成');
-  assert.equal(after.endReason, undefined, '不该记 endReason');
-  assert.equal(after.sessionId, 'S1', '状态不该被改写');
-  // 审计无痕。**关键**：拒绝要发生在任何状态写入**之前**——一旦先认领再发现是子 agent，
-  // 轮次就已经烧掉了。所以这里断言的是「什么都没发生过」，不是「返回了 null」。
-  const logFile = pathsMod.loopsLogFileFor(cwd).file;
-  const auditCount = existsSync(logFile)
-    ? (await readFile(logFile, 'utf8')).split('\n').filter(Boolean).length
-    : 0;
-  assert.equal(auditCount, 0, '子 agent 事件不该留下审计记录');
-});
-
-test('Stop hook：hook_event_name=SubagentStop 直接放行（即使没有 agent 标识字段）', async () => {
-  const { startLoop, stopHookRaw, listLoops } = await import(serviceUrl());
-  const cwd = join(tmp, 'proj');
-  await startLoop({ prompt: '任务', completionPromise: 'DONE', maxIterations: 5, sessionId: 'S1', cwd });
-  const p = await writeTranscript('sub2.jsonl', [assistantLine('说完了 <promise>DONE</promise>')]);
-  const payload = JSON.stringify({
-    hook_event_name: 'SubagentStop', session_id: 'S1', transcript_path: p, cwd, stop_hook_active: false,
-  });
-  assert.equal(await stopHookRaw(payload), null);
-  const [l] = await listLoops({ cwd });
-  assert.equal(l.active, true, 'SubagentStop 不该判完成');
 });
 
 test('Stop hook：主 agent 事件（无 agent 标识）照常认领——防线不能误伤主路径', async () => {
@@ -1036,4 +983,63 @@ test('转向时上限 0（无限）抬到有界 10（转向指令要求按轮次
   const [l] = await listLoops({ cwd });
   assert.equal(l.maxIterations, 10, '0 → 10');
   assert.equal(l.active, true);
+});
+
+// ============================================================
+// SubagentStop / 子 agent 标识：与 Stop 同等判决（对齐 ralph，不过滤）
+// ============================================================
+// 旧语义（已废弃）是「子 agent 事件一律放行」——但一回合的最后一条消息
+// 完全可能是 subagent 的产出（含 <promise>），过滤它循环就永远无法闭环。
+// 新语义：hook_event_name 是唯一判据，SubagentStop 与 Stop 走同一条判决链。
+
+test('SubagentStop 与 Stop 同等判决：命中 promise 照样完成', async () => {
+  const { startLoop, stopHookRaw, listLoops } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', completionPromise: 'DONE', maxIterations: 5, sessionId: 'S1', cwd });
+  const p = await writeTranscript('sas.jsonl', [assistantLine('子 agent 完成了 <promise>DONE</promise>')]);
+
+  const out = await stopHookRaw(JSON.stringify({
+    hook_event_name: 'SubagentStop', session_id: 'S1', transcript_path: p, cwd, stop_hook_active: false,
+  }));
+  assert.ok(out?.systemMessage?.includes('完成'), 'SubagentStop 的 promise 命中必须闭环: ' + JSON.stringify(out));
+  const [l] = await listLoops({ cwd });
+  assert.equal(l.active, false);
+  assert.equal(l.endReason, 'promise');
+});
+
+test('SubagentStop 未命中 → 同样 block 灌回（不白放行）', async () => {
+  const { startLoop, stopHookRaw } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', completionPromise: 'DONE', maxIterations: 5, sessionId: 'S1', cwd });
+  const p = await writeTranscript('sas2.jsonl', [assistantLine('子 agent 还没完成')]);
+  const out = await stopHookRaw(JSON.stringify({
+    hook_event_name: 'SubagentStop', session_id: 'S1', transcript_path: p, cwd, stop_hook_active: false,
+  }));
+  assert.equal(out.decision, 'block');
+  assert.equal(out.reason, '任务');
+});
+
+test('带 agent_id 等标识的普通 Stop 事件：不再被启发式过滤（闭环优先）', async () => {
+  const { startLoop, stopHookRaw, listLoops } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await startLoop({ prompt: '任务', completionPromise: 'DONE', maxIterations: 5, sessionId: 'S1', cwd });
+  const p = await writeTranscript('sas3.jsonl', [assistantLine('主会话借 subagent 干完 <promise>DONE</promise>')]);
+  // 旧语义：带 agent_id 就放行（isSubagentEvent 启发式）→ 循环永远关不上
+  const out = await stopHookRaw(JSON.stringify({
+    hook_event_name: 'Stop', session_id: 'S1', agent_id: 'a91e478bdb60245ab',
+    transcript_path: p, cwd, stop_hook_active: false,
+  }));
+  assert.ok(out?.systemMessage?.includes('完成'), '带 agent 标识的 Stop 必须照常判决: ' + JSON.stringify(out));
+  const [l] = await listLoops({ cwd });
+  assert.equal(l.endReason, 'promise');
+});
+
+test('readLastAssistantText：isSidechain 行不再被跳过（最后一条可能是 subagent 的）', async () => {
+  const { readLastAssistantText } = await import(serviceUrl());
+  const p = await writeTranscript('sas4.jsonl', [
+    assistantLine('主 agent 的中间产出'),
+    assistantLine('子 agent 交付 <promise>DONE</promise>', { isSidechain: true }),
+  ]);
+  assert.equal(await readLastAssistantText(p), '子 agent 交付 <promise>DONE</promise>',
+    '最后一条消息即使是子 agent 的，也必须是完成判定的依据');
 });

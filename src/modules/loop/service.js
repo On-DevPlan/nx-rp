@@ -16,7 +16,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { CLAUDE_SETTINGS_PATH, SNAPSHOTS_DIR, LOOPS_DIR, loopsFileFor, loopsLogFileFor, cwdDir } from '../../core/paths.js';
 import { appendOwnGroup, removeOwnGroups, toggleSettings, findOwnGroups, ownsGroup, readSettings } from '../../core/claude-settings.js';
-import { readStdin, parseHookEvent, deriveSessionId, isSubagentEvent } from '../../core/hook-io.js';
+import { readStdin, parseHookEvent, deriveSessionId } from '../../core/hook-io.js';
 import { invalidInput } from '../../core/errors.js';
 
 // 我们那条 hook entry 的指纹——on/off 靠 marker 在 hooks 数组里认亲。
@@ -577,8 +577,8 @@ export async function readLastAssistantText(transcriptPath, { maxLines = TRANSCR
       continue; // 半截/坏行跳过
     }
     if (obj?.type && obj.type !== 'assistant') continue;
-    // 子 agent 的回复不算主 agent 的完成信号（ralph 无此层，是刻意的加固）
-    if (obj?.isSidechain === true) continue;
+    // 不排除 isSidechain：一回合最后一条消息完全可能是 subagent 的产出（含
+    // <promise>），排除它就无法闭环（对齐 ralph：它对 transcript 不过滤）。
     if (obj?.message?.role !== 'assistant' && obj?.role !== 'assistant') continue;
     if (++seen > maxLines) break;
     const content = obj?.message?.content;
@@ -668,22 +668,12 @@ async function stopHookInner(raw) {
   const cwd = typeof event.cwd === 'string' && event.cwd ? event.cwd : cwdDir();
   const sessionId = deriveSessionId(event, cwd);
 
-  // 事件名有值但不是 Stop → 本 hook 被挂错了事件，放行（防御性）
-  if (event.hook_event_name && event.hook_event_name !== 'Stop' && event.hook_event_name !== 'SubagentStop') {
-    return null;
-  }
-
-  // 子 agent 的 stop：**放行，绝不认领**。
+  // 事件名有值但不是 Stop/SubagentStop → 本 hook 被挂错了事件，放行（防御性）。
   //
-  // 子 agent 与主 agent 共享 session_id（实测），而 pickLoop 只认 session_id——
-  // 不加这道闸，子 agent 的回合边界会被当成主会话的，凭空消耗一个轮次。
-  // 今天提示词是常量，代价只是重复灌一次；一旦 loop 有了 stages，被烧掉的就是一个
-  // **阶段**——而那种失败没有任何观测面（轮次照常递增、审计看不出异常）。
-  //
-  // 为什么放在读状态、抢锁之前：不该发生的事不要留痕——不占锁、不写状态、不写审计。
-  if (event.hook_event_name === 'SubagentStop' || isSubagentEvent(event)) {
-    return null;
-  }
+  // SubagentStop 与 Stop **同等对待**（对齐 ralph：它不过滤任何事件）：
+  // 一回合的最后一条消息完全可能是 subagent 的产出（含 <promise>），过滤它
+  // 会导致循环永远无法闭环。子 agent 的「轮次纯度」损失由审计的
+  // lastText / stop_hook_active 字段事后归因，不在判决层拦截。
 
   const target = loopsFileFor(cwd);
   if (!target?.file) return null;
