@@ -137,9 +137,9 @@ export default {
       id: 'loop.on',
       cli: ['loop', 'on'],
       http: ['POST', '/api/loop/on'],
-      summary: '在当前项目启用 Stop hook（默认写 .claude/settings.local.json，不污染仓库）',
+      summary: '启用 Stop hook（默认写 .claude/settings.local.json，不污染仓库；--scope global 可本机全局生效）',
       flags: {
-        scope: { type: 'string', enum: ['local', 'shared'], hint: 'local=本地级（默认，个人）| shared=项目级（入库，团队共享）' },
+        scope: { type: 'string', enum: ['global', 'local', 'shared'], hint: 'local=本地级（默认，个人）| shared=项目级（入库，团队共享）| global=用户级（本机所有项目生效）' },
         dryRun: { type: 'boolean', hint: '只预览，不写盘' },
       },
       run: (ctx) => service.hookOn({ scope: ctx.scope || 'local', dryRun: !!ctx.dryRun }),
@@ -147,17 +147,19 @@ export default {
         if (r.dryRun) return `[dry-run] 将写入: ${r.settingsPath}`;
         const snap = r.snapshot ? `\n快照: ${r.snapshot}` : '';
         const gi = r.gitignore?.added ? `\n已追加 .gitignore 忽略规则: ${r.gitignore.path}` : '';
-        const scopeNote = r.scope === 'shared'
-          ? '\n注意: 写的是项目级 settings.json（通常入库）——确保团队每人都装了 nx-rp'
-          : '';
-        return (r.skipped ? `已启用（无需改动）: ${r.settingsPath}` : `已启用: ${r.settingsPath}`) + snap + gi + scopeNote;
+        const notes = {
+          shared: '\n注意: 写的是项目级 settings.json（通常入库）——确保团队每人都装了 nx-rp',
+          // 全局为什么安全：判决先按会话认领循环，没有归属本会话的循环就直接放行
+          global: '\n注意: 写的是用户级配置——本机所有项目生效。无关项目零影响（没有归属本会话的循环会直接放行），只多一次 hook 进程启动',
+        };
+        return (r.skipped ? `已启用（无需改动）: ${r.settingsPath}` : `已启用: ${r.settingsPath}`) + snap + gi + (notes[r.scope] || '');
       },
     },
     {
       id: 'loop.off',
       cli: ['loop', 'off'],
       http: ['POST', '/api/loop/off'],
-      summary: '在当前项目停用 Stop hook（本地级+项目级都摘；其余 hooks 一律不动）',
+      summary: '停用 Stop hook（全局+本地级+项目级都摘；其余 hooks 一律不动）',
       flags: { dryRun: { type: 'boolean', hint: '只预览，不写盘' } },
       run: (ctx) => service.hookOff({ dryRun: !!ctx.dryRun }),
       render: (r) => {
@@ -170,18 +172,24 @@ export default {
       id: 'loop.status',
       cli: ['loop', 'status'],
       http: ['GET', '/api/loop/status'],
-      summary: '看 Stop hook 开关状态与当前目录的循环列表',
+      summary: '看 Stop hook 开关状态（全局/本地级/项目级三层）与当前目录的循环列表',
       run: () => service.hookStatus().then(async (st) => ({
         ...st,
         loops: await service.listLoops({ limit: 20 }),
       })),
       render: (r) => {
         const mark = (b) => (b ? '✓' : '✗');
+        const LABEL = { global: '全局', local: '本地级', shared: '项目级' };
         const lines = [
-          `hook: ${r.enabled ? '已启用' : '未启用'}${r.activeScope ? `（${r.activeScope === 'shared' ? '项目级' : '本地级'}）` : ''}${r.disableAllHooks ? ' · 注意: disableAllHooks=true，全被关掉' : ''}`,
+          `hook: ${r.enabled ? '已启用' : '未启用'}${r.activeScope ? `（${LABEL[r.activeScope]}）` : ''}${r.disableAllHooks ? ` · 注意: disableAllHooks=true（来自${LABEL[r.disableAllHooksFrom] || '未知层'}），全被关掉` : ''}`,
+          `  全局  [${mark(r.detail.global?.enabled)}] ${r.detail.global?.path || '（家目录不可知）'}`,
           `  本地级[${mark(r.detail.local.enabled)}] ${r.detail.local.path}`,
           `  项目级[${mark(r.detail.shared.enabled)}] ${r.detail.shared.path}`,
         ];
+        // 多层同时启用：官方语义是各层 hooks **合并**（不是覆盖），同一事件会跑多次
+        if ((r.enabledScopes || []).length > 1) {
+          lines.push(`  ⚠ 多层同时启用（${r.enabledScopes.map((s) => LABEL[s]).join(' + ')}）——同一事件 hook 会跑多次，建议只留一层`);
+        }
         if (r.loops?.length) {
           lines.push('', `循环（${r.loops.length}）:`);
           for (const l of r.loops) {

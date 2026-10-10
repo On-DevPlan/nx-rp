@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const ROOT = join(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'), '..');
@@ -568,6 +568,96 @@ test('hookOn dry-run：不写盘', async () => {
   assert.equal(existsSync(join(cwd, '.gitignore')), false);
 });
 
+// ─── 全局（用户级）作用域 ──────────────────────────────────────────
+//
+// loop 敢开全局的根据：Stop 判决先按会话认领循环（pickLoop），没有归属本会话的
+// 循环就直接放行，且循环状态按 cwd 分文件——对无关项目零影响，只多一次进程启动。
+
+test('hookOn --scope global：写用户级配置，不碰项目目录与 .gitignore', async () => {
+  const { hookOn } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await mkdir(cwd, { recursive: true });
+  const globalPath = pathsMod.CLAUDE_SETTINGS_PATH;
+  await writeFile(globalPath, JSON.stringify({ env: { A: '1' } }), 'utf8'); // 预置内容，让快照有东西可留
+
+  const r = await hookOn({ cwd, scope: 'global' });
+  assert.equal(r.scope, 'global');
+  assert.equal(r.settingsPath, globalPath, '全局层写用户级 settings.json');
+  assert.equal(r.gitignore.added, false, '全局层不该动 .gitignore');
+  assert.equal(existsSync(join(cwd, '.gitignore')), false, '不该创建 .gitignore');
+  assert.equal(existsSync(join(cwd, '.claude')), false, '不该碰项目 .claude/');
+  // 快照走缺省（用户级同目录）——与 hook-prompt/hook-skill 对同一个文件的行为一致
+  assert.ok(r.snapshot, '应生成快照');
+  assert.equal(dirname(r.snapshot), dirname(globalPath), '全局快照应落在用户级同目录: ' + r.snapshot);
+
+  const data = JSON.parse(await readFile(globalPath, 'utf8'));
+  assert.equal(data.hooks.Stop.length, 1);
+  assert.deepEqual(data.env, { A: '1' }, '外科手术性：其它键原样保留');
+});
+
+test('hookStatus：全局启用被如实报出（detail.global / activeScope / enabledScopes）', async () => {
+  const { hookOn, hookStatus } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await mkdir(cwd, { recursive: true });
+  await hookOn({ cwd, scope: 'global' });
+  const st = await hookStatus({ cwd });
+  assert.equal(st.enabled, true);
+  assert.equal(st.activeScope, 'global', '只开了全局层时生效层就是全局');
+  assert.deepEqual(st.enabledScopes, ['global']);
+  assert.equal(st.detail.global.enabled, true);
+  assert.equal(st.detail.local.enabled, false);
+  assert.equal(st.detail.shared.enabled, false);
+  assert.equal(st.globalSettingsPath, pathsMod.CLAUDE_SETTINGS_PATH);
+});
+
+test('hookOff：全局层也一并摘掉', async () => {
+  const { hookOn, hookOff, hookStatus } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await mkdir(cwd, { recursive: true });
+  await hookOn({ cwd, scope: 'global' });
+  const off = await hookOff({ cwd });
+  assert.equal(off.skipped, false);
+  assert.equal(off.removedFrom.length, 1);
+  assert.equal(off.removedFrom[0], pathsMod.CLAUDE_SETTINGS_PATH, '全局层应被摘除');
+  assert.equal((await hookStatus({ cwd })).enabled, false);
+});
+
+test('hookStatus：多层同时启用 → enabledScopes 报全部，单值 activeScope 取最具体层', async () => {
+  const { hookOn, hookStatus } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await mkdir(cwd, { recursive: true });
+  await hookOn({ cwd, scope: 'global' });
+  await hookOn({ cwd, scope: 'local' });
+  const st = await hookStatus({ cwd });
+  assert.deepEqual(st.enabledScopes, ['local', 'global'], '按具体度排序（具体在前）');
+  assert.equal(st.activeScope, 'local', '具体压过笼统');
+  assert.equal(st.settingsPath, join(cwd, '.claude', 'settings.local.json'));
+});
+
+test('disableAllHooks：取「最先定义该键」的那层（设置优先级），而非各层 OR', async () => {
+  const { hookStatus } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await mkdir(join(cwd, '.claude'), { recursive: true });
+  await writeFile(pathsMod.CLAUDE_SETTINGS_PATH, JSON.stringify({ disableAllHooks: true }), 'utf8');
+  await writeFile(join(cwd, '.claude', 'settings.local.json'), JSON.stringify({ disableAllHooks: false }), 'utf8');
+
+  const st = await hookStatus({ cwd });
+  assert.equal(st.disableAllHooks, false, '本地级 false 覆盖用户级 true（官方优先级）');
+  assert.equal(st.disableAllHooksFrom, 'local');
+
+  // 只有用户级定义时 → 取用户级
+  await rm(join(cwd, '.claude', 'settings.local.json'), { force: true });
+  const st2 = await hookStatus({ cwd });
+  assert.equal(st2.disableAllHooks, true, '没有更具体的层定义时，用户级生效');
+  assert.equal(st2.disableAllHooksFrom, 'global');
+});
+
+test('hookOn：未知 scope 直接报错（不静默落到本地级）', async () => {
+  const { hookOn } = await import(serviceUrl());
+  const cwd = join(tmp, 'proj');
+  await mkdir(cwd, { recursive: true });
+  await assert.rejects(() => hookOn({ cwd, scope: 'project' }), (e) => e.code === 'INVALID_INPUT');
+});
 test('manualSnippet 与 hookOn 写盘的 entry 完全同源', async () => {
   const { hookOn, manualSnippet } = await import(serviceUrl());
   const cwd = join(tmp, 'proj');

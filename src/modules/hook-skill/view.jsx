@@ -1,91 +1,65 @@
-// Skill 追踪面板：健康分统计卡片 + 开关状态卡片 + 手动添加卡片。
+// Skill 追踪面板：健康分统计卡。
 //
-// 与 doc / deps 同构：数据从 /api 拉，操作走同一条 action，
-// 底部 CLI 提示由命令表派生（CliHints）。开关只动本 hook 的 entry
-// （marker `__nx_rp_skill_track__`），不影响提示词日志等其他 hooks。
+// 头部三件套与启停动作由 useHookDomain 生成（hook 域三视图公共），本视图只管
+// Skill 使用统计表。**统计是全局的，没有 scope 维度**：skill 装在
+// `~/.claude/skills` 或 `<项目>/.claude/skills`，是跨目录的全局资产——
+// 「这个 skill 最近用过吗」问的是本机整体，所以不提供、也不显示 cwd 筛选。
 //
-// **统计是全局的，没有 scope 维度**：skill 装在 `~/.claude/skills` 或
-// `<项目>/.claude/skills`，是跨目录的全局资产——「这个 skill 最近用过吗」
-// 问的是本机整体。所以这里不提供、也不显示 cwd 筛选。
-import { useCallback, useEffect, useState } from 'react';
+// 统计表跟着状态一起拉（afterRefresh）——失败落进共享错误卡，重试一次救全部，
+// 符合「同一个作用域下任何一项失败都该被看见」的预期。
+import { useState } from 'react';
 import { api } from '../../web/frontend/api/client.js';
-import { useDialog, useGuard, useToast } from '../../web/frontend/components/ui.jsx';
 import { CliHints } from '../../web/frontend/components/CliHints.jsx';
 import ManualAddCard from '../../web/frontend/components/ManualAddCard.jsx';
+import { useHookDomain } from '../../web/frontend/components/hook-domain.jsx';
 
 const LIMIT = 200;
 
 export default function HookSkillView() {
-  const [status, setStatus] = useState(null);
   const [skills, setSkills] = useState(null);
-  const [loadError, setLoadError] = useState(null);
-  const guard = useGuard();
-  const toast = useToast();
-  const { dialog, node: dialogNode } = useDialog();
 
-  const refresh = useCallback(async () => {
-    setLoadError(null);
-    try {
-      setStatus(await api('/api/hook-skill/status'));
-      setSkills(await api('/api/hook-skill/skills?limit=' + LIMIT));
-    } catch (e) {
-      // 失败要如实呈现——不能让「请求失败」伪装成「暂无记录」
-      setLoadError(e.message || '加载失败');
-    }
-  }, []);
-
-  useEffect(() => { refresh(); }, [refresh]);
-
-  const enable = () =>
-    guard(async () => {
-      await api('/api/hook-skill/on', { method: 'POST', body: {} });
-      toast('已启用');
-      await refresh();
-    });
-
-  const disable = () =>
-    guard(async () => {
-      const ok = await dialog({
-        title: '停用 Skill 追踪？',
-        message: '会从 ~/.claude/settings.json 摘掉 Skill 追踪那条 hook（写前自动留快照；提示词日志等其他 hooks 不动）。',
-        danger: true,
-        okText: '停用',
-      });
-      if (!ok) return;
-      await api('/api/hook-skill/off', { method: 'POST', body: {} });
-      toast('已停用');
-      await refresh();
-    });
+  const dom = useHookDomain({
+    statusUrl: '/api/hook-skill/status',
+    onUrl: '/api/hook-skill/on',
+    offUrl: '/api/hook-skill/off',
+    offDialog: {
+      title: '停用 Skill 追踪？',
+      message: '会从 ~/.claude/settings.json 摘掉 Skill 追踪那条 hook（写前自动留快照；提示词日志等其他 hooks 不动）。',
+      okText: '停用',
+    },
+    showScope: false,
+    note: '全局统计——skill 装在本机、跨项目通用，无目录筛选',
+    statusNote: (st) => `工具调用[${st.toolHook ? '✓' : '✗'}] PostToolUse · 斜杠[${st.slashHook ? '✓' : '✗'}] UserPromptSubmit`,
+    extraRows: (st) => [['Skill 统计目录', st.skillsDir, `${st.skillsDir}（分片存放；查询时全局聚合）`]],
+    extraWarnings: (st) => {
+      const out = [];
+      if (st.manualCount > 0) out.push(<>检测到 {st.manualCount} 条手工粘贴条目——「停用」时会一并摘除。</>);
+      if (st.enabled && !st.slashHook) out.push(<>斜杠落点未启用——<code>/skill</code> 调用不会被记录，重新「启用」可补上。</>);
+      return out;
+    },
+    afterRefresh: async () => setSkills(await api('/api/hook-skill/skills?limit=' + LIMIT)),
+  });
 
   return (
     <div>
-      <div className="toolbar" style={{ marginBottom: 12 }}>
-        <span className="muted">全局统计 — 不按目录过滤（skill 装在本机，跨项目通用）</span>
-      </div>
-
-      {loadError && (
-        <div className="card" style={{ marginBottom: 14 }}>
-          <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span className="tag bad">加载失败</span>
-            <span className="muted">{loadError}</span>
-            <button className="btn small ghost" style={{ marginLeft: 'auto' }} onClick={refresh}>重试</button>
-          </div>
-        </div>
-      )}
+      {dom.toolbar}
+      {dom.errorCard}
 
       <div className="card">
         <div className="colhead">
           <span>Skill 使用统计</span>
-          <span className="muted">{skills ? `${skills.length} 个` : '加载中…'}</span>
+          <span className="muted">{skills ? `${skills.length} 个` : (dom.loadError ? '加载失败' : '加载中…')}</span>
         </div>
         <div className="toolbar" style={{ padding: '8px 12px' }}>
-          <button className="btn small" onClick={enable} disabled={!status || status.enabled || status.corrupt}>启用</button>
-          <button className="btn small ghost" onClick={disable} disabled={!status || !status.enabled || status.corrupt}>停用</button>
-          <span className="muted" style={{ marginLeft: 'auto', fontSize: 12 }}>
-            健康分 = 使用量(0-60，相对最高频归一) + 新鲜度(0-40，30 天线性衰减)，借鉴 teamai-cli
+          <span
+            className="muted"
+            style={{ fontSize: 12 }}
+            title="健康分 = 使用量(0-60，相对最高频归一) + 新鲜度(0-40，30 天线性衰减)，借鉴 teamai-cli"
+          >
+            健康分 = 使用量 + 新鲜度
           </span>
         </div>
-        {!skills ? <div className="empty">{loadError ? '无法加载' : '加载中…'}</div>
+        {!skills ? <div className="empty">{dom.loadError ? '无法加载' : '加载中…'}</div>
           : skills.length === 0 ? <div className="empty">（暂无 Skill 记录——启用 hook 后在会话里触发一个 skill 再来）</div>
           : skills.map((r) => (
             <div key={r.skill} className="row">
@@ -100,64 +74,9 @@ export default function HookSkillView() {
           ))}
       </div>
 
-      <div className="card">
-        <div className="colhead">
-          <span>Hook 状态</span>
-          <span className="muted">{status ? (status.corrupt ? '配置文件异常' : (status.enabled ? '已启用' : '未启用')) : (loadError ? '—' : '加载中…')}</span>
-        </div>
-        {!status ? <div className="empty">{loadError ? '无法读取 hook 状态' : '加载中…'}</div> : (
-          <div style={{ padding: '10px 12px' }}>
-            <dl className="kv">
-              <div className="kv-row">
-                <dt>状态</dt>
-                <dd>
-                  <span className={'tag' + (status.enabled ? ' strong' : '')}>{status.enabled ? '已启用' : '未启用'}</span>
-                  <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>
-                    工具调用[{status.toolHook ? '✓' : '✗'}] PostToolUse · 斜杠[{status.slashHook ? '✓' : '✗'}] UserPromptSubmit
-                  </span>
-                  {status.disableAllHooks ? <span className="tag bad" style={{ marginLeft: 6 }}>disableAllHooks</span> : null}
-                  {status.corrupt ? <span className="tag bad" style={{ marginLeft: 6 }}>settings.json 损坏</span> : null}
-                </dd>
-              </div>
-              <div className="kv-row">
-                <dt>配置文件</dt>
-                <dd className="mono nowrap" title={status.settingsPath}>{status.settingsPath}</dd>
-              </div>
-              <div className="kv-row">
-                <dt>Skill 统计目录</dt>
-                <dd className="mono nowrap" title={status.skillsDir}>
-                  {status.skillsDir}
-                  <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>← 分片存放；查询时全局聚合</span>
-                </dd>
-              </div>
-            </dl>
-            {status.manualCount > 0 ? (
-              <p className="muted" style={{ marginTop: 8 }}>
-                检测到 {status.manualCount} 条手工粘贴的条目（无内部指纹但命令一致）——已被视为本工具的 hook，统计不会重复计数，「停用」时会一并摘除。
-              </p>
-            ) : null}
-            {status.enabled && !status.slashHook ? (
-              <p className="muted" style={{ marginTop: 8 }}>
-                斜杠落点未启用：在会话里敲 <code>/skill-name</code> 的调用不会被记录。重新「启用」即可补上（旧版本只写了 PostToolUse 一条）。
-              </p>
-            ) : null}
-            {status.disableAllHooks ? (
-              <p className="muted" style={{ marginTop: 8 }}>
-                全局 <code>disableAllHooks: true</code> 会一票否决所有 hooks——即使这里显示已启用，skill 调用也不会被记录。
-              </p>
-            ) : null}
-            {status.corrupt ? (
-              <p className="muted" style={{ marginTop: 8 }}>
-                settings.json 无法解析（可能被手改出错或半截写入）。请先修复该文件；修复前「启用 / 停用」会拒绝写入以防覆盖你的配置。
-              </p>
-            ) : null}
-          </div>
-        )}
-      </div>
-
-      <ManualAddCard snippet={status?.snippet} eventKey="PostToolUse" />
-
-      {dialogNode}
+      {dom.statusCard}
+      <ManualAddCard snippet={dom.status?.snippet} eventKey="PostToolUse" />
+      {dom.dialogNode}
       <div style={{ marginTop: 12 }}>
         <CliHints module="hook-skill" />
       </div>

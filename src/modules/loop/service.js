@@ -87,10 +87,22 @@ function hasMarker(group) {
   return typeof group === 'object' && group !== null && group[MARKER] === true;
 }
 
-// 项目配置路径：默认本地级（个人、通常被 gitignore），--shared 才是入库的项目级。
-// 为什么不默认写 settings.json：hook 命令引用的是**本机装的 nx-rp**，
+// 作用域 → 配置文件。三层：
+//   global —— 用户级 ~/.claude/settings.json，本机所有项目
+//   local  —— 项目本地级（个人、通常被 gitignore），默认
+//   shared —— 项目级（入库、团队共享）
+//
+// 为什么默认 local 而不是项目的 settings.json：hook 命令引用的是**本机装的 nx-rp**，
 // 对没装的同事毫无意义；而且快照/写入会污染仓库。
-export function projectSettingsPath(scope = 'local', cwd = cwdDir()) {
+//
+// 为什么 loop **敢**提供 global（另两个日志 hook 本来就是全局的）：Stop 判决先按
+// 会话认领循环（pickLoop）——没有归属本会话的循环就直接放行，且循环状态按 cwd 分
+// 文件存放。所以全局 hook 对无关项目是零影响（只多一次 node 启动），换来的好处是
+// 不必每个项目各配一次。
+export const SCOPES = ['global', 'local', 'shared'];
+
+export function settingsPathFor(scope = 'local', cwd = cwdDir()) {
+  if (scope === 'global') return CLAUDE_SETTINGS_PATH;
   const dir = join(cwd, '.claude');
   return scope === 'shared' ? join(dir, 'settings.json') : join(dir, 'settings.local.json');
 }
@@ -129,14 +141,19 @@ async function ensureGitignored(cwd = cwdDir()) {
 // ─── on / off / status ─────────────────────────────────────────────
 
 export async function hookOn({ scope = 'local', dryRun = false, cwd = cwdDir() } = {}) {
-  const settingsPath = projectSettingsPath(scope, cwd);
+  if (!SCOPES.includes(scope)) {
+    throw invalidInput(`未知作用域: ${scope}（可选: ${SCOPES.join(' / ')}）`);
+  }
+  const settingsPath = settingsPathFor(scope, cwd);
   const { changed, snapshot } = await toggleSettings(
     (next) => appendOwnGroup(next, spec()),
     {
       dryRun,
       settingsPath,
-      // 项目级快照集中存放——不落进项目目录污染仓库
-      snapshotDir: SNAPSHOTS_DIR,
+      // 项目级快照集中存放——不落进项目目录污染仓库。
+      // 全局（global）走缺省（快照落 ~/.claude/ 同目录），与 hook-prompt/hook-skill
+      // 对同一个文件的历史行为保持一致（集中目录里已有该项目级快照，别混）。
+      ...(scope === 'global' ? {} : { snapshotDir: SNAPSHOTS_DIR }),
     },
   );
   if (dryRun) {
@@ -144,7 +161,7 @@ export async function hookOn({ scope = 'local', dryRun = false, cwd = cwdDir() }
   }
   // 只有真写盘、且写的是本地级时，才动 .gitignore
   let gitignore = { added: false, path: null };
-  if (changed && scope !== 'shared') {
+  if (changed && scope === 'local') {
     gitignore = await ensureGitignored(cwd).catch(() => ({ added: false, path: null }));
   }
   return {
@@ -156,10 +173,15 @@ export async function hookOn({ scope = 'local', dryRun = false, cwd = cwdDir() }
 }
 
 export async function hookOff({ dryRun = false, cwd = cwdDir() } = {}) {
-  // 两个项目级文件都要摘——用户可能在作用域之间切过
-  const targets = [projectSettingsPath('local', cwd), projectSettingsPath('shared', cwd)];
+  // 三层都要摘——用户可能在作用域之间切过（项目级 ↔ 全局），off 的语义是摘干净
+  const targets = [
+    settingsPathFor('local', cwd),
+    settingsPathFor('shared', cwd),
+    settingsPathFor('global', cwd),
+  ];
   const found = [];
   for (const p of targets) {
+    if (!p) continue; // 家目录不可知时 CLAUDE_SETTINGS_PATH 可能为 null
     let s;
     try {
       s = await readSettings(p);
@@ -179,7 +201,11 @@ export async function hookOff({ dryRun = false, cwd = cwdDir() } = {}) {
   for (const p of found) {
     const { snapshot } = await toggleSettings(
       (next) => removeOwnGroups(next, { event: EVENT, marker: MARKER, commands: [HOOK_COMMAND] }),
-      { settingsPath: p, snapshotDir: SNAPSHOTS_DIR },
+      {
+        settingsPath: p,
+        // 与 on 对称：全局配置的快照走缺省（同目录），项目级集中在 ~/.nx-rp/snapshots/
+        ...(p === settingsPathFor('global', cwd) ? {} : { snapshotDir: SNAPSHOTS_DIR }),
+      },
     );
     if (snapshot) lastSnapshot = snapshot;
   }
@@ -187,12 +213,26 @@ export async function hookOff({ dryRun = false, cwd = cwdDir() } = {}) {
 }
 
 export async function hookStatus({ cwd = cwdDir() } = {}) {
-  const localPath = projectSettingsPath('local', cwd);
-  const sharedPath = projectSettingsPath('shared', cwd);
+  // 三层都报：用户可能只在全局开过（新支持），也可能在两层都开过（要点出来）
+  const paths = {
+    global: settingsPathFor('global', cwd),
+    local: settingsPathFor('local', cwd),
+    shared: settingsPathFor('shared', cwd),
+  };
   const detail = {};
   let corrupt = false;
+  // disableAllHooks 的**有效值**：设置优先级是「具体压过笼统」——项目本地级 >
+  // 项目级 > 用户级（官方文档：项目的 disableAllHooks: false 覆盖用户级的 true）。
+  // 所以取**最先定义该键**的那层的值，而不是把各层 OR 起来（OR 会把「被项目
+  // 显式关掉的全局面板开关」误报成生效中）。
   let disableAllHooks = false;
-  for (const [scope, p] of [['local', localPath], ['shared', sharedPath]]) {
+  let disableAllHooksFrom = null;
+  for (const scope of ['local', 'shared', 'global']) {
+    const p = paths[scope];
+    if (!p) { // 家目录不可知（无 HOME/USERPROFILE）时全局层缺失
+      detail[scope] = { path: null, exists: false, enabled: false, manualCount: 0 };
+      continue;
+    }
     let s;
     try {
       s = await readSettings(p);
@@ -201,7 +241,10 @@ export async function hookStatus({ cwd = cwdDir() } = {}) {
       detail[scope] = { path: p, enabled: false, manualCount: 0, exists: existsSync(p), corrupt: true };
       continue;
     }
-    if (s.disableAllHooks === true) disableAllHooks = true;
+    if (disableAllHooksFrom === null && 'disableAllHooks' in s) {
+      disableAllHooks = s.disableAllHooks === true;
+      disableAllHooksFrom = scope;
+    }
     const own = findOwnGroups(s, EVENT, MARKER, (g) => ownsGroup(g, MARKER, [HOOK_COMMAND]));
     detail[scope] = {
       path: p,
@@ -211,14 +254,18 @@ export async function hookStatus({ cwd = cwdDir() } = {}) {
       manualCount: own.filter((g) => !hasMarker(g)).length,
     };
   }
-  const activeScope = detail.shared.enabled ? 'shared' : (detail.local.enabled ? 'local' : null);
+  // 单值 activeScope：具体压过笼统（项目级 > 本地级 > 全局），面板/CLI 的
+  // 「当前生效的那个文件」读它；enabledScopes 报全部已启用的层（供多层提醒）。
+  const enabledScopes = ['shared', 'local', 'global'].filter((s) => detail[s]?.enabled);
+  const activeScope = enabledScopes[0] || null;
   return {
     enabled: activeScope !== null,
     activeScope,
+    enabledScopes,
     detail,
-    // 兼容面板/CLI 的单值读取（当前生效的那个项目级文件）
-    settingsPath: activeScope === 'shared' ? sharedPath : localPath,
-    globalSettingsPath: CLAUDE_SETTINGS_PATH,
+    // 兼容面板/CLI 的单值读取（当前最具体的那层；都没开时给本地级路径）
+    settingsPath: activeScope ? paths[activeScope] : paths.local,
+    globalSettingsPath: paths.global,
     scopeCwd: cwd,
     // 面板布防表单的默认值：**本 nx-rp 进程**能看到的会话身份。
     //
@@ -228,6 +275,7 @@ export async function hookStatus({ cwd = cwdDir() } = {}) {
     // Stop hook 永远认领不到，表现为「布防了但一直不动」）。
     currentSessionId: process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || null,
     disableAllHooks,
+    disableAllHooksFrom,
     corrupt,
     snippet: manualSnippet(),
   };

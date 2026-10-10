@@ -1,17 +1,17 @@
-// 循环面板：开关状态卡 + 活动循环卡 + 布防表单 + 审计日志卡。
+// 循环面板：布防表单 + 活动循环卡 + 审计日志卡。
 //
-// 与 hook-prompt / hook-skill 同构：数据从 /api 拉，操作走同一条 action，
-// 底部 CLI 提示由命令表派生（CliHints）。
+// 头部三件套（toolbar / 加载失败卡 / Hook 状态卡）与启停动作由 useHookDomain
+// 生成——hook 域三视图的公共部分，本视图只管循环本身。
 //
-// 与另两个 hook 模块的**本质差异**：开关写的是**项目级**配置
+// 与另两个 hook 模块的**本质差异**在 cfg 里声明：开关写的是**项目级**配置
 // （.claude/settings.local.json），不是全局 ~/.claude/settings.json——
 // 只有配了 hook 的项目才会被拦截退出，语义与 ralph-loop 一致。
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../../web/frontend/api/client.js';
-import { useDialog, useGuard, useToast, Copyable, Modal } from '../../web/frontend/components/ui.jsx';
+import { useGuard, useToast, Copyable, Modal } from '../../web/frontend/components/ui.jsx';
 import { CliHints } from '../../web/frontend/components/CliHints.jsx';
-import { useStore } from '../../web/frontend/store.jsx';
 import ManualAddCard from '../../web/frontend/components/ManualAddCard.jsx';
+import { useHookDomain } from '../../web/frontend/components/hook-domain.jsx';
 
 const LIMIT = 200;
 
@@ -55,17 +55,27 @@ function SessionTag({ loop }) {
   );
 }
 
+// 会话归属的判定说明与 ✓/✗ 小标签（状态卡里三层作用域用）
+function mark(on) {
+  return <span className={'tag' + (on ? ' strong' : '')}>{on ? '✓' : '✗'}</span>;
+}
+
+// 三层作用域：目标文件 + 一行说明（选择器选项与状态卡共用同一份文案源）
+const SCOPES = [
+  { id: 'global', label: '全局', note: '本机所有项目生效——无关项目零影响（没有归属本会话的循环会直接放行）' },
+  { id: 'local', label: '本地级', note: '仅本项目、仅自己（写入被 gitignore 的本地配置）' },
+  { id: 'shared', label: '项目级', note: '入库、团队共享——每人本机需装 nx-rp' },
+];
+const SCOPE_LABEL = Object.fromEntries(SCOPES.map((s) => [s.id, s.label]));
 
 export default function LoopView() {
-  const { boot } = useStore();
-  const [status, setStatus] = useState(null);
-  const [loops, setLoops] = useState(null);
   const [logs, setLogs] = useState(null);
-  const [loadError, setLoadError] = useState(null);
+  // 启用写到哪一层（写之前先选；已启用时跟随当前生效层）
+  const [scopeLevel, setScopeLevel] = useState('local');
   // 布防表单
   const [prompt, setPrompt] = useState('');
   const [maxIter, setMaxIter] = useState('20');
-  // 布防表单。完成短语默认**留空** = 仅轮次循环（跑到上限或手动取消才停）——
+  // 完成短语默认**留空** = 仅轮次循环（跑到上限或手动取消才停）——
   // 这是很多场景的合理默认（用户说"跑 10 轮就行"时根本不该编一个承诺词）；
   // 需要提前结束时再填。
   const [promise, setPromise] = useState('');
@@ -79,44 +89,59 @@ export default function LoopView() {
   const [viewLog, setViewLog] = useState(null);
   const guard = useGuard();
   const toast = useToast();
-  const { dialog, node: dialogNode } = useDialog();
 
-  const refresh = useCallback(async () => {
-    setLoadError(null);
-    try {
-      const st = await api('/api/loop/status');
-      setStatus(st);
-      setLoops(st.loops || []);
-      setLogs(await api('/api/loop/log?limit=' + LIMIT));
-    } catch (e) {
-      // 失败要如实呈现——不能让「请求失败」伪装成「暂无数据」
-      setLoadError(e.message || '加载失败');
-    }
-  }, []);
+  const dom = useHookDomain({
+    statusUrl: '/api/loop/status',
+    onUrl: '/api/loop/on',
+    // 启用写哪一层由选择器决定——函数形式在**点击那一刻**求值（对象形式会停在旧值）
+    onBody: () => ({ scope: scopeLevel }),
+    onEnabled: (r) => (r.gitignore?.added ? '已启用，并追加了 .gitignore 忽略规则' : (r.skipped ? '已启用（无需改动）' : '已启用')),
+    offUrl: '/api/loop/off',
+    offDialog: {
+      title: '停用循环 hook？',
+      message: '会从全局 / 本地级 / 项目级三个配置里摘掉循环那条 Stop hook（写前自动留快照；其他 hooks 不动）。已布防的循环记录保留。',
+      okText: '停用',
+    },
+    note: 'Stop hook 拦截退出并灌回同一条提示词，直到命中承诺词或轮次上限',
+    summary: (st) => (st.corrupt ? '配置文件异常'
+      : (st.enabled ? `已启用（${SCOPE_LABEL[st.activeScope] || st.activeScope}）` : '未启用')),
+    // 三层各一行：用户可能在层间切过，要能看到哪层开了、哪层缺
+    extraRows: (st) => [
+      ['全局', <>{mark(st.detail?.global?.enabled)} {st.detail?.global?.path || '（家目录不可知）'}</>, st.detail?.global?.path],
+      ['本地级', <>{mark(st.detail?.local?.enabled)} {st.detail?.local?.path}</>, st.detail?.local?.path],
+      ['项目级', <>{mark(st.detail?.shared?.enabled)} {st.detail?.shared?.path}</>, st.detail?.shared?.path],
+    ],
+    extraWarnings: (st) => ((st.enabledScopes || []).length > 1
+      // 官方语义：各层 hooks 是**合并**而不是覆盖——同一事件会跑多次
+      ? [<>多层同时启用（{(st.enabledScopes || []).map((s) => SCOPE_LABEL[s] || s).join(' + ')}）——同一事件 hook 会跑多次，建议只留一层（先「停用」再在目标层「启用」）。</>]
+      : []),
+    // 作用域选择器与「启用」同一行：先选层，再点启用
+    toolbarExtra: ({ refresh, status: st }) => (
+      <>
+        <select
+          value={scopeLevel}
+          onChange={(e) => setScopeLevel(e.target.value)}
+          disabled={!!st?.enabled}
+          title="启用写到哪一层（已启用时先「停用」再切层）"
+          style={{ fontSize: 12 }}
+        >
+          {SCOPES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+        </select>
+        <button className="btn small ghost" onClick={refresh}>刷新</button>
+      </>
+    ),
+    toolbarNote: SCOPES.find((s) => s.id === scopeLevel)?.note,
+    // 审计日志跟着状态一起拉；循环列表就在 status 响应里（st.loops）
+    afterRefresh: async () => setLogs(await api('/api/loop/log?limit=' + LIMIT)),
+  });
 
-  useEffect(() => { refresh(); }, [refresh]);
+  const { status, dialog, dialogNode } = dom;
+  const loops = status?.loops || [];
 
-  const enable = () =>
-    guard(async () => {
-      const r = await api('/api/loop/on', { method: 'POST', body: { scope: 'local' } });
-      if (r.gitignore?.added) toast('已启用，并追加了 .gitignore 忽略规则');
-      else toast(r.skipped ? '已启用（无需改动）' : '已启用');
-      await refresh();
-    });
-
-  const disableHook = () =>
-    guard(async () => {
-      const ok = await dialog({
-        title: '停用循环 hook？',
-        message: '会从本项目的 .claude/settings*.json 摘掉循环那条 Stop hook（写前自动留快照；提示词日志、Skill 追踪等其他 hooks 不动）。已布防的循环记录保留。',
-        danger: true,
-        okText: '停用',
-      });
-      if (!ok) return;
-      await api('/api/loop/off', { method: 'POST', body: {} });
-      toast('已停用');
-      await refresh();
-    });
+  // 启用后把选择器拨到**实际生效的那层**：否则选择器显示「全局」而实际写在本地级，
+  // 用户按上面那行说明去理解就会错。只在生效层变化时拨动（不动用户的手动选择）。
+  const activeScope = status?.activeScope || null;
+  useEffect(() => { if (activeScope) setScopeLevel(activeScope); }, [activeScope]);
 
   const start = () =>
     guard(async () => {
@@ -135,7 +160,7 @@ export default function LoopView() {
       toast(`已布防 ${r.id}`);
       setPrompt('');
       setSessInput('');
-      await refresh();
+      await dom.refresh();
     });
 
   const cancel = (id) =>
@@ -149,7 +174,7 @@ export default function LoopView() {
       if (!ok) return;
       const r = await api('/api/loop/cancel', { method: 'POST', body: id ? { id } : {} });
       toast(r.cancelled > 0 ? `已取消 ${r.cancelled} 个` : '没有活跃的循环');
-      await refresh();
+      await dom.refresh();
     });
 
   // 删除记录（区别于「取消」：取消只标记结束，记录留着，列表会越堆越长）
@@ -165,7 +190,7 @@ export default function LoopView() {
       await api('/api/loop/remove', { method: 'POST', body: { id } });
       toast(`已删除 ${id}`);
       if (editing?.id === id) setEditing(null);
-      await refresh();
+      await dom.refresh();
     });
 
   // 进入/退出编辑态。复制一份到 draft 上，改完点「保存」才提交——
@@ -197,87 +222,17 @@ export default function LoopView() {
       toast(r.skipped ? '没有改动'
         : `已更新 ${r.changed.join(' / ')}${r.reactivated ? '（已重新激活）' : ''}`);
       setEditing(null);
-      await refresh();
+      await dom.refresh();
     });
 
-  const activeCount = (loops || []).filter((l) => l.active !== false).length;
+  const activeCount = loops.filter((l) => l.active !== false).length;
 
   return (
     <div>
-      <div className="toolbar" style={{ marginBottom: 12 }}>
-        <span className="muted">scope: <code>{boot?.cwdScope || ''}</code></span>
-        <span className="muted" style={{ marginLeft: 'auto' }}>
-          循环机制：Stop hook 拦截会话退出，把同一条提示词灌回去，直到出现完成短语
-        </span>
-      </div>
+      {dom.toolbar}
+      {dom.errorCard}
 
-      {loadError && (
-        <div className="card" style={{ marginBottom: 14 }}>
-          <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span className="tag bad">加载失败</span>
-            <span className="muted">{loadError}</span>
-            <button className="btn small ghost" style={{ marginLeft: 'auto' }} onClick={refresh}>重试</button>
-          </div>
-        </div>
-      )}
-
-      {/* ── Hook 状态 ── */}
-      <div className="card">
-        <div className="colhead">
-          <span>Hook 状态</span>
-          <span className="muted">
-            {status
-              ? (status.corrupt ? '配置文件异常' : (status.enabled ? `已启用${status.activeScope === 'shared' ? '（项目级）' : '（本地级）'}` : '未启用'))
-              : (loadError ? '—' : '加载中…')}
-          </span>
-        </div>
-        <div className="toolbar" style={{ padding: '8px 12px' }}>
-          <button className="btn small" onClick={enable} disabled={!status || status.enabled || status.corrupt}>启用</button>
-          <button className="btn small ghost" onClick={disableHook} disabled={!status || !status.enabled || status.corrupt}>停用</button>
-          <button className="btn small ghost" onClick={refresh}>刷新</button>
-          <span className="muted" style={{ marginLeft: 'auto', fontSize: 12 }}>
-            开关写在<b>本项目</b>的 .claude/ 下，不是全局——只有本项目会被拦截退出
-          </span>
-        </div>
-        {!status ? <div className="empty">{loadError ? '无法读取 hook 状态' : '加载中…'}</div> : (
-          <div style={{ padding: '10px 12px' }}>
-            <dl className="kv">
-              <div className="kv-row">
-                <dt>状态</dt>
-                <dd>
-                  <span className={'tag' + (status.enabled ? ' strong' : '')}>{status.enabled ? '已启用' : '未启用'}</span>
-                  {status.disableAllHooks ? <span className="tag bad" style={{ marginLeft: 6 }}>disableAllHooks</span> : null}
-                  {status.corrupt ? <span className="tag bad" style={{ marginLeft: 6 }}>settings.json 损坏</span> : null}
-                </dd>
-              </div>
-              <div className="kv-row">
-                <dt>本地级</dt>
-                <dd className="mono nowrap" title={status.detail?.local?.path}>
-                  <span className={'tag' + (status.detail?.local?.enabled ? ' strong' : '')}>{status.detail?.local?.enabled ? '✓' : '✗'}</span>{' '}
-                  {status.detail?.local?.path}
-                </dd>
-              </div>
-              <div className="kv-row">
-                <dt>项目级</dt>
-                <dd className="mono nowrap" title={status.detail?.shared?.path}>
-                  <span className={'tag' + (status.detail?.shared?.enabled ? ' strong' : '')}>{status.detail?.shared?.enabled ? '✓' : '✗'}</span>{' '}
-                  {status.detail?.shared?.path}
-                </dd>
-              </div>
-            </dl>
-            {status.disableAllHooks ? (
-              <p className="muted" style={{ marginTop: 8 }}>
-                全局 <code>disableAllHooks: true</code> 会一票否决所有 hooks——即使这里显示已启用，循环也不会被拦截。
-              </p>
-            ) : null}
-            {status.corrupt ? (
-              <p className="muted" style={{ marginTop: 8 }}>
-                settings.json 无法解析（可能被手改出错或半截写入）。请先修复该文件；修复前「启用 / 停用」会拒绝写入以防覆盖你的配置。
-              </p>
-            ) : null}
-          </div>
-        )}
-      </div>
+      {dom.statusCard}
 
       {/* ── 布防 ── */}
       <div className="card">
@@ -320,19 +275,19 @@ export default function LoopView() {
             </button>
             {!status?.enabled ? <span className="muted" style={{ fontSize: 11 }}>先启用 hook</span> : null}
           </div>
-          {/* 会话绑定提示：这是最容易踩的坑——留空时绑定的是「运行 nx-rp 那个进程的会话」，
+          {/* 会话绑定：这是最容易踩的坑——留空时绑定的是「运行 nx-rp 那个进程的会话」，
               不是浏览器所在会话。布防前让用户看清会绑到谁。 */}
           <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>
             {sessInput.trim()
-              ? <>将绑定到 <Copyable text={sessInput.trim()} className="tag mono" title="点击复制">{String(sessInput.trim()).slice(0, 8)}</Copyable>（显式指定）</>
+              ? <>会话：绑定 <Copyable text={sessInput.trim()} className="tag mono" title="点击复制">{String(sessInput.trim()).slice(0, 8)}</Copyable>（显式指定）</>
               : status?.currentSessionId
-                ? <>将绑定到当前会话 <Copyable text={status.currentSessionId} className="tag mono" title={`${status.currentSessionId}\n点击复制`}>{String(status.currentSessionId).slice(0, 8)}</Copyable>（服务端 env 捕获）</>
-                : <span className="bad">拿不到会话身份——留空布防会失败，请在上面的「会话」里显式填写 sessionId。</span>}
+                ? <>会话：绑定当前会话 <Copyable text={status.currentSessionId} className="tag mono" title={`${status.currentSessionId}\n点击复制`}>{String(status.currentSessionId).slice(0, 8)}</Copyable>（服务端 env 捕获）</>
+                : <span className="bad">拿不到会话身份——留空布防会失败，请在「会话」里显式填 sessionId。</span>}
           </p>
           <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
             {promise.trim()
-              ? <>完成判定：模型输出 <code>&lt;promise&gt;{promise.trim()}&lt;/promise&gt;</code> 且一字不差时提前结束。每次迭代轮次 +1，到上限自动停止。</>
-              : <>完成判定：**仅轮次循环**——无结束短语，每轮 +1 直到上限（或手动取消）。适合"跑 N 轮就行"的任务；需要提前结束再填上面的短语。</>}
+              ? <>完成判定：输出 <code>&lt;promise&gt;{promise.trim()}&lt;/promise&gt;</code> 即提前结束，否则每轮 +1、到上限停。</>
+              : <>完成判定：仅轮次——到上限或手动取消才停；需提前结束再填上面的短语。</>}
           </p>
         </div>
       </div>
@@ -342,13 +297,13 @@ export default function LoopView() {
         <div className="colhead">
           <span>循环</span>
           <span className="muted">
-            {loops ? `${activeCount} 活跃 / 共 ${loops.length}` : '加载中…'}
+            {status ? `${activeCount} 活跃 / 共 ${loops.length}` : '加载中…'}
             {activeCount > 0 ? (
               <button className="btn small ghost" style={{ marginLeft: 10 }} onClick={() => cancel(null)}>全部取消</button>
             ) : null}
           </span>
         </div>
-        {!loops ? <div className="empty">{loadError ? '无法加载' : '加载中…'}</div>
+        {!status ? <div className="empty">{dom.loadError ? '无法加载' : '加载中…'}</div>
           : loops.length === 0 ? <div className="empty">（暂无循环——在上面布防一个）</div>
           : loops.map((l) => {
             const max = l.maxIterations > 0 ? l.maxIterations : 0;
@@ -368,8 +323,7 @@ export default function LoopView() {
                     {l.endReason ? <span className="tag" style={{ fontSize: 11 }}>{END_REASON[l.endReason] || l.endReason}</span> : null}
                     {/* 会话归属：多会话并行时靠这个区分这条循环归谁。
                         两个字段都是「本会话」的等价标识——sessionId 是显式传的，
-                        claudeSessionId 是启动时从 CLAUDE_CODE_SESSION_ID 捕获的。
-                        同时显示短码 + 可点击复制，与 hook-prompt 面板一致。 */}
+                        claudeSessionId 是启动时从 CLAUDE_CODE_SESSION_ID 捕获的。 */}
                     <SessionTag loop={l} />
                   </div>
                   <div className="muted" style={{ fontSize: 12, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -397,13 +351,14 @@ export default function LoopView() {
             );
           })}
       </div>
+
       {/* ── 审计日志 ── */}
       <div className="card">
         <div className="colhead">
           <span>迭代日志</span>
-          <span className="muted">{logs ? `${logs.length} 条` : '加载中…'}</span>
+          <span className="muted">{logs ? `${logs.length} 条` : (dom.loadError ? '加载失败' : '加载中…')}</span>
         </div>
-        {!logs ? <div className="empty">{loadError ? '无法加载' : '加载中…'}</div>
+        {!logs ? <div className="empty">{dom.loadError ? '无法加载' : '加载中…'}</div>
           : logs.length === 0 ? <div className="empty">（暂无记录——跑起一个循环后再来）</div>
           : logs.map((r, i) => (
             <div key={i} className="row wrap" style={{ gap: 8 }}>
@@ -446,7 +401,7 @@ export default function LoopView() {
         <Modal title={`编辑循环 ${editing.id}`} onClose={() => setEditing(null)}>
           <dl className="kv" style={{ marginBottom: 12 }}>
             {(() => {
-              const l = (loops || []).find((x) => x.id === editing.id);
+              const l = loops.find((x) => x.id === editing.id);
               if (!l) return null;
               const max = l.maxIterations > 0 ? l.maxIterations : '∞';
               return (
@@ -474,8 +429,12 @@ export default function LoopView() {
                     <dd>
                       <span className="tag mono" style={{ fontSize: 11 }}>v{l.promptVersion ?? 1}</span>
                       {(l.promptVersions || []).length > 0 ? (
-                        <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>
-                          已保留 {l.promptVersions.length} 个历史版（改动此处会归档当前版并升为 v{(l.promptVersion ?? 1) + 1}）
+                        <span
+                          className="muted"
+                          style={{ marginLeft: 6, fontSize: 11 }}
+                          title={`在此改动任务描述会把当前版归档进历史，版本升为 v${(l.promptVersion ?? 1) + 1}`}
+                        >
+                          已保留 {l.promptVersions.length} 个历史版
                         </span>
                       ) : (
                         <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>（从未改过任务描述）</span>
@@ -526,8 +485,7 @@ export default function LoopView() {
           </div>
 
           <p className="muted" style={{ marginTop: 10, fontSize: 12 }}>
-            提高轮次上限可**复活**「因到上限而停」的循环（手工取消的不复活）。
-            会话决定归属：填错会让这条循环永远等不到 Stop hook。
+            提高上限可复活「到顶而停」的循环；会话填错则永远等不到 Stop hook。
           </p>
 
           <div className="toolbar" style={{ marginTop: 12, justifyContent: 'flex-end' }}>
@@ -567,7 +525,7 @@ export default function LoopView() {
           {/* 当轮用的 prompt：审计只记版号，全文去状态文件的 promptVersions 里查。
               改过任务描述时这一行能回答「第 N 轮当时在做什么」，不然复盘只剩产出、没有指令。 */}
           {(() => {
-            const l = (loops || []).find((x) => x.id === viewLog.loopId);
+            const l = loops.find((x) => x.id === viewLog.loopId);
             if (!l) return null;
             const v = viewLog.promptVersion ?? 1;
             const cur = (l.promptVersion ?? 1) === v;
@@ -593,10 +551,10 @@ export default function LoopView() {
             );
           })()}
           <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
-            这一轮 Stop hook 从 transcript 取到的最后一条 assistant 文本——即「这一轮 Agent 做了什么」。
+            本轮最后一条 assistant 回复（成果全文）
             {/* 早期版本只存 200 字且把换行折叠掉了，那些历史条目补不回来——如实标出，别让人以为是被截了 */}
             {viewLog.lastText && viewLog.lastTextChars > viewLog.lastText.length ? (
-              <span className="bad">（这条是 v0.9.3 之前记的旧条目，当时只存前 200 字，原文已无法恢复）</span>
+              <span className="bad">（v0.9.3 前的旧条目只存了前 200 字，原文无法恢复）</span>
             ) : null}
           </div>
           <pre style={{

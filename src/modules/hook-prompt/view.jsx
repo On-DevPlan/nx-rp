@@ -1,33 +1,32 @@
-// 提示词日志面板：开关状态卡片 + 目录分组切换器 + 提示词记录表格 + 手动添加卡片。
+// 提示词日志面板：目录分组切换器 + 提示词记录表格。
 //
-// 与 doc / deps 同构：数据从 /api 拉，操作走同一条 action，
-// 底部 CLI 提示由命令表派生（CliHints）。开关只动本 hook 的 entry
-// （marker `__nx_rp_prompt_log__`），不影响 Skill 追踪等其他 hooks。
+// 头部三件套（toolbar / 加载失败卡 / Hook 状态卡）与启停动作由 useHookDomain
+// 生成——hook 域三视图的公共部分，本视图只管提示词记录与目录切换。
 //
-// 目录维度：**默认跟随当前 scope**（与 doc/deps 一致），顶部一排 chip 是可见的
-// 组切换器——切一条就只看该目录的记录。分组由服务端按**归一化路径**聚合
+// 目录维度：**默认跟随当前 scope**（与 doc/deps 一致），下方下拉是可见的
+// 组切换器——选一条就只看该目录的记录。分组由服务端按**归一化路径**聚合
 // （同一目录的 `D:\x` 与 `D:/x` 是同一组），所以切换一定能拿到记录。
+//
+// 记录与分组是本视图自己的数据（参数随 activeScope 变）——不走 afterRefresh，
+// 独立拉取；hook 状态的加载失败由共享错误卡负责，这里的失败只红在记录卡上。
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../../web/frontend/api/client.js';
-import { Modal, useDialog, useGuard, useToast, Copyable } from '../../web/frontend/components/ui.jsx';
+import { Copyable, Modal } from '../../web/frontend/components/ui.jsx';
 import { CliHints } from '../../web/frontend/components/CliHints.jsx';
 import { useStore } from '../../web/frontend/store.jsx';
 import ManualAddCard from '../../web/frontend/components/ManualAddCard.jsx';
+import { useHookDomain } from '../../web/frontend/components/hook-domain.jsx';
 
 const LIMIT = 200;
 
 export default function HookPromptView() {
   const { boot, scopeTick } = useStore();
-  const [status, setStatus] = useState(null);
   const [logs, setLogs] = useState(null);
   const [groups, setGroups] = useState([]);
   // null = 跟随当前 scope；字符串 = 锁定到该目录
   const [cwd, setCwd] = useState(null);
-  const [loadError, setLoadError] = useState(null);
+  const [logsError, setLogsError] = useState(null);
   const [viewing, setViewing] = useState(null);
-  const guard = useGuard();
-  const toast = useToast();
-  const { dialog, node: dialogNode } = useDialog();
 
   // 切换 scope 时视图会重挂载，但 cwd 是组件内 state——必须跟着复位，
   // 否则会停在上一个 scope 的锁定目录上（用户切了项目却还在看旧项目）。
@@ -44,7 +43,7 @@ export default function HookPromptView() {
     () => new Set((boot?.recents || []).map((r) => normalizeKey(r.scope))),
     [boot],
   );
-  // 目录下拉的选项（options）：
+  // 目录下拉的选项：
   //   首项 = 「跟随当前目录」，它本身就是当前 scope 那一条，所以**不再重复列一次**
   //   （两条 option 同值会让受控 select 行为含混），条数并进首项文案；
   //   其余只列**已注册**的目录（store.recents），排除当前 scope。
@@ -53,11 +52,13 @@ export default function HookPromptView() {
     () => groups.filter((g) => normalizeKey(g.key) !== currentKey && registered.has(normalizeKey(g.key))),
     [groups, registered, currentKey],
   );
-  const refresh = useCallback(async () => {
+  // 日志里「未注册」的目录数——下拉不列它们（只见 store.recents），但用户得知道还有这批。
+  const unregistered = Math.max(0, groups.length - options.length - 1);
+
+  const loadLogs = useCallback(async () => {
     if (!boot) return; // 等 bootstrap 拿到当前 scope，避免先用错目录查一轮
-    setLoadError(null);
+    setLogsError(null);
     try {
-      setStatus(await api('/api/hook-prompt/status'));
       const qs = new URLSearchParams();
       qs.set('limit', String(LIMIT));
       // 一律 all=true + groups=1：
@@ -74,71 +75,43 @@ export default function HookPromptView() {
       setGroups(res && Array.isArray(res.groups) ? res.groups : []);
     } catch (e) {
       // 失败要如实呈现——不能让「请求失败」伪装成「暂无记录」
-      setLoadError(e.message || '加载失败');
+      setLogsError(e.message || '加载失败');
     }
   }, [boot, activeScope]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { loadLogs(); }, [loadLogs]);
 
-  const enable = () =>
-    guard(async () => {
-      await api('/api/hook-prompt/on', { method: 'POST', body: {} });
-      toast('已启用');
-      await refresh();
-    });
-
-  const disable = () =>
-    guard(async () => {
-      const ok = await dialog({
-        title: '停用提示词日志？',
-        message: '会从 ~/.claude/settings.json 摘掉提示词日志那条 hook（写前自动留快照；Skill 追踪等其他 hooks 不动）。',
-        danger: true,
-        okText: '停用',
-      });
-      if (!ok) return;
-      await api('/api/hook-prompt/off', { method: 'POST', body: {} });
-      toast('已停用');
-      await refresh();
-    });
-
-  // 目录下拉的选项：当前 scope 若已不在分组里（该目录还没记录）也要占一项，
-  // 否则用户看到「跟随当前目录」选着却找不到对应项，不知道自己在看什么。
+  const dom = useHookDomain({
+    statusUrl: '/api/hook-prompt/status',
+    onUrl: '/api/hook-prompt/on',
+    offUrl: '/api/hook-prompt/off',
+    offDialog: {
+      title: '停用提示词日志？',
+      message: '会从 ~/.claude/settings.json 摘掉提示词日志那条 hook（写前自动留快照；Skill 追踪等其他 hooks 不动）。',
+      okText: '停用',
+    },
+    note: cwd ? '已锁定到一条目录' : '记录跟随当前 scope，下方可切换已注册目录',
+    statusNote: () => 'UserPromptSubmit',
+    extraRows: (st) => [['日志目录', st.logDir, `${st.logDir}（一条目录一个文件，按归一化路径分片；查询时按路径聚合）`]],
+  });
 
   return (
     <div>
-      <div className="toolbar" style={{ marginBottom: 12 }}>
-        <span className="muted">scope: <code>{boot?.cwdScope || ''}</code></span>
-        <span className="muted" style={{ marginLeft: 'auto' }}>
-          {cwd ? '已锁定到一条目录' : '记录跟随当前 scope，可在下方切换已注册目录'}
-        </span>
-      </div>
-
-      {loadError && (
-        <div className="card" style={{ marginBottom: 14 }}>
-          <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span className="tag bad">加载失败</span>
-            <span className="muted">{loadError}</span>
-            <button className="btn small ghost" style={{ marginLeft: 'auto' }} onClick={refresh}>重试</button>
-          </div>
-        </div>
-      )}
+      {dom.toolbar}
+      {dom.errorCard}
 
       <div className="card">
         <div className="colhead">
           <span>提示词记录</span>
-          <span className="muted">{logs ? `${logs.length} 条` : '加载中…'}</span>
-        </div>
-        <div className="toolbar" style={{ padding: '8px 12px' }}>
-          <button className="btn small" onClick={enable} disabled={!status || status.enabled || status.corrupt}>启用</button>
-          <button className="btn small ghost" onClick={disable} disabled={!status || !status.enabled || status.corrupt}>停用</button>
+          <span className="muted">{logs ? `${logs.length} 条` : (logsError ? '加载失败' : '加载中…')}</span>
         </div>
 
-        <div className="toolbar" style={{ padding: '0 12px 10px', gap: 6 }}>
+        <div className="toolbar" style={{ padding: '8px 12px', gap: 6 }}>
           <span className="muted" style={{ fontSize: 12 }}>目录</span>
           <select
             value={cwd || ''}
             onChange={(e) => setCwd(e.target.value || null)}
-            title="只列已注册的目录（nx-rp 用过的项目）；选「跟随当前目录」即跟随 scope"
+            title={`只列已注册的目录（nx-rp 用过的项目，${options.length} 个）；选「跟随当前目录」即跟随当前 scope；日志里另有 ${unregistered} 个未注册目录未列出`}
             style={{ minWidth: 260, maxWidth: 420, fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 12 }}
           >
             <option value="">
@@ -156,12 +129,12 @@ export default function HookPromptView() {
               ↺ 跟随当前目录
             </button>
           ) : null}
-          <span className="muted" style={{ fontSize: 11 }}>
-            仅列已注册目录（{options.length} 个）· 日志里另有 {Math.max(0, groups.length - options.length - 1)} 个未注册目录未列出
-          </span>
+          {logsError ? (
+            <button className="btn small ghost" onClick={loadLogs}>重试</button>
+          ) : null}
         </div>
 
-        {!logs ? <div className="empty">{loadError ? '无法加载' : '加载中…'}</div>
+        {!logs ? <div className="empty">{logsError ? '无法加载' : '加载中…'}</div>
           : logs.length === 0 ? <div className="empty">（该目录暂无记录——在启用 hook 的会话里发一条提示词后再来）</div>
           : logs.map((r, i) => (
             <div key={r.ts + i} className="row">
@@ -184,52 +157,8 @@ export default function HookPromptView() {
           ))}
       </div>
 
-      <div className="card">
-        <div className="colhead">
-          <span>Hook 状态</span>
-          <span className="muted">{status ? (status.corrupt ? '配置文件异常' : (status.enabled ? '已启用' : '未启用')) : (loadError ? '—' : '加载中…')}</span>
-        </div>
-        {!status ? <div className="empty">{loadError ? '无法读取 hook 状态' : '加载中…'}</div> : (
-          <div style={{ padding: '10px 12px' }}>
-            <dl className="kv">
-              <div className="kv-row">
-                <dt>状态</dt>
-                <dd>
-                  <span className={'tag' + (status.enabled ? ' strong' : '')}>{status.enabled ? '已启用' : '未启用'}</span>
-                  <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>UserPromptSubmit</span>
-                  {status.disableAllHooks ? <span className="tag bad" style={{ marginLeft: 6 }}>disableAllHooks</span> : null}
-                  {status.corrupt ? <span className="tag bad" style={{ marginLeft: 6 }}>settings.json 损坏</span> : null}
-                </dd>
-              </div>
-              <div className="kv-row">
-                <dt>配置文件</dt>
-                <dd className="mono nowrap" title={status.settingsPath}>{status.settingsPath}</dd>
-              </div>
-              <div className="kv-row">
-                <dt>日志目录</dt>
-                <dd className="mono nowrap" title={status.logDir}>
-                  {status.logDir}
-                  <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>
-                    ← 一条目录一个文件，按归一化路径分片；查询时按路径聚合
-                  </span>
-                </dd>
-              </div>
-            </dl>
-            {status.disableAllHooks ? (
-              <p className="muted" style={{ marginTop: 8 }}>
-                全局 <code>disableAllHooks: true</code> 会一票否决所有 hooks——即使这里显示已启用，提示词也不会被记录。
-              </p>
-            ) : null}
-            {status.corrupt ? (
-              <p className="muted" style={{ marginTop: 8 }}>
-                settings.json 无法解析（可能被手改出错或半截写入）。请先修复该文件；修复前「启用 / 停用」会拒绝写入以防覆盖你的配置。
-              </p>
-            ) : null}
-          </div>
-        )}
-      </div>
-
-      <ManualAddCard snippet={status?.snippet} eventKey="UserPromptSubmit" />
+      {dom.statusCard}
+      <ManualAddCard snippet={dom.status?.snippet} eventKey="UserPromptSubmit" />
 
       {viewing && (
         <Modal title={fmt(viewing.ts)} onClose={() => setViewing(null)}>
@@ -249,12 +178,11 @@ export default function HookPromptView() {
               >
                 <code>claude --resume {viewing.sessionId}</code>
               </Copyable>
-              <span className="muted" style={{ fontSize: 11 }}>← 点击复制，粘贴到终端即可回到该会话</span>
             </div>
           ) : null}
         </Modal>
       )}
-      {dialogNode}
+      {dom.dialogNode}
       <div style={{ marginTop: 12 }}>
         <CliHints module="hook-prompt" />
       </div>

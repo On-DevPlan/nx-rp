@@ -2,28 +2,42 @@
 
 `rp-loop` 的命令面。所有命令同时有 Web 面板等价物（`nx-rp serve` → 「循环」tab）。
 
-## 一、开关（项目级）
+## 一、开关（默认项目级，可全局）
 
 ```
-nx-rp loop on   [--scope local|shared] [--dry-run]
+nx-rp loop on   [--scope global|local|shared] [--dry-run]
 nx-rp loop off  [--dry-run]
 nx-rp loop status
 ```
 
-**开关是项目级的，不是全局的**——这是与官方 ralph-loop 插件最大的结构差异：
+**默认写项目本地级**（与官方 ralph-loop 插件「装插件即全局生效」的差异所在）：
 
-| 作用域 | 目标文件 | 是否入库 |
-| --- | --- | --- |
-| `local`（默认） | `<项目>/.claude/settings.local.json` | 通常 gitignore（个人） |
-| `shared` | `<项目>/.claude/settings.json` | 通常入库（团队共享） |
+| 作用域 | 目标文件 | 生效范围 | 是否入库 |
+| --- | --- | --- | --- |
+| `local`（默认） | `<项目>/.claude/settings.local.json` | 仅本项目、仅自己 | 通常 gitignore |
+| `shared` | `<项目>/.claude/settings.json` | 仅本项目 | 通常入库（团队共享） |
+| `global` | `~/.claude/settings.json` | **本机所有项目** | 不入库（用户级配置） |
 
 - 默认写 `local`：hook 命令引用的是**本机装的 nx-rp**，对没装的同事毫无意义，
   且写入/快照会污染仓库
-- 写 `local` 时会**自动补一行 `.gitignore` 忽略规则**，并在输出里明确告知
-- **快照集中到 `~/.nx-rp/snapshots/`**，不落进项目目录
-- `--scope shared` 不碰 `.gitignore`
+- 写 `local` 时会**自动补一行 `.gitignore` 忽略规则**，并在输出里明确告知；
+  `shared` / `global` 不碰 `.gitignore`
+- **项目级快照集中到 `~/.nx-rp/snapshots/`**，不落进项目目录；`global` 的快照
+  与另两个 hook 模块一致，落在用户级配置同目录
 
-`status` 会分别报两个文件的开关状态（`detail.local` / `detail.shared`），
+**为什么 loop 敢开全局**（另两个日志 hook 本来就是全局的）：
+
+- Stop 判决先按**会话**认领循环（`pickLoop`）——没有归属本会话的循环就直接放行；
+- 循环状态按 cwd 分文件存放，别的项目的循环根本不会被读到。
+
+所以全局启用对无关项目零影响，只多一次 hook 进程启动；好处是不必在每个项目各配一次。
+
+⚠ **只留一层**：官方语义是各层 hooks **合并**而不是互相替换，同一事件在多层都有条目
+时会跑多次（循环会被重复处理）。`status` 的 `enabledScopes` 报全部已启用的层，
+面板在多层同时启用时也会给出提醒。
+
+`status` 会分别报三个文件的开关状态（`detail.global` / `detail.local` / `detail.shared`）、
+生效的层（`activeScope`，具体压过笼统：项目级 > 本地级 > 全局；`enabledScopes` 为全部），
 以及当前目录的循环列表。
 
 ## 二、布防与取消
@@ -73,7 +87,7 @@ EOF
 ## 三、观测
 
 ```
-nx-rp loop status        # hook 开关（两个项目级文件明细）+ 循环列表
+nx-rp loop status        # hook 开关（三层明细）+ 循环列表
 nx-rp loop log [--all] [--limit N]
 ```
 

@@ -5,7 +5,7 @@
 | 症状 | 先查 | 说明 |
 | --- | --- | --- |
 | 回合照常结束，prompt 没被灌回 | `nx-rp loop status` | hook 是否已启用；循环是否还在 `active` |
-| hook 显示未启用 | 本项目跑过 `nx-rp loop on` 吗 | **开关是项目级的**——在 A 项目启用不生效于 B 项目 |
+| hook 显示未启用 | 跑过 `nx-rp loop on` 吗（本项目，或 `--scope global` 本机全局） | 默认开关**按项目**——在 A 项目启用不生效于 B 项目；要一劳永逸用 `--scope global` |
 | 已启用但不拦 | 全局 `"disableAllHooks": true` | status 会提示；它一票否决所有 hooks |
 | 已启用但本会话不拦 | `sessionId` 是否匹配 | `loop status` 看循环的 `sessionId`；是不是在**另一个会话**里看这个循环 |
 | 在错误的目录跑 | `--cwd` / 当前目录 | 状态文件按 cwd 哈希分桶，换目录就是另一个循环 |
@@ -73,9 +73,9 @@ echo '{"hook_event_name":"Stop","session_id":"<你的会话id>","transcript_path
 排查：
 
 ```bash
-nx-rp loop status                    # 看本项目两个 settings 文件的 detail
+nx-rp loop status                    # 看三层（全局/本地级/项目级）的 detail
 cat .claude/settings.local.json      # 看 hooks.Stop 数组里有几条
-cat ~/.claude/settings.json          # 官方插件可能配在用户级
+cat ~/.claude/settings.json          # 官方插件 / 全局启用的 nx-rp 都可能配在这里
 ```
 
 同一会话里只启用一套。
@@ -84,18 +84,20 @@ cat ~/.claude/settings.json          # 官方插件可能配在用户级
 
 ```bash
 nx-rp loop cancel       # 先停掉活跃循环
-nx-rp loop off          # 摘掉本项目两个 settings 文件里的 hook
+nx-rp loop off          # 摘掉全局 + 本地级 + 项目级三个配置里的 hook
 ```
 
 然后确认：
 
+- `~/.claude/settings.json`（若开过 `--scope global`）里 `hooks.Stop` 已空（或字段消失）
 - `.claude/settings.local.json` 里 `hooks.Stop` 已空（或字段消失）
 - `.gitignore` 里那行 `.claude/settings.local.json` 是否还需要（不用可手删）
 - `~/.nx-rp/loops/` 下的状态与审计日志（想留着回顾就留着）
 
-快照在 `~/.nx-rp/snapshots/`，需要回滚时直接覆盖回对应的 settings 文件。
+快照：项目级的在 `~/.nx-rp/snapshots/`，全局（用户级）的与配置文件同目录——
+需要回滚时直接覆盖回对应的 settings 文件。
 
 ## 八、面板
 
-`nx-rp serve` → 「循环」tab 能看到：hook 开关（两个项目级文件明细）、循环列表（带轮次进度条）、
-迭代日志。Web 与 CLI 同源，面板上每个按钮都有等价命令。
+`nx-rp serve` → 「循环」tab 能看到：hook 开关（全局/本地级/项目级三层明细 + 作用域选择器）、
+循环列表（带轮次进度条）、迭代日志。Web 与 CLI 同源，面板上每个按钮都有等价命令。

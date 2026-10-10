@@ -43,12 +43,12 @@ description: nx-rp loop —— 自引用循环（Ralph 技术）：把同一条�
 ## 六条命令
 
 ```
-nx-rp loop on             # 在当前项目启用 Stop hook（项目级，写 .claude/settings.local.json）
+nx-rp loop on             # 启用 Stop hook（默认项目本地级；--scope global 本机全局生效）
 nx-rp loop start "<任务>"  # 布防：把 prompt 写进状态，之后每次要结束回合都会被拦
-nx-rp loop status         # 看 hook 开关 + 当前目录的循环与轮次
+nx-rp loop status         # 看 hook 开关（全局/本地级/项目级三层）+ 当前目录的循环与轮次
 nx-rp loop log            # 看每轮判定审计（继续 / 命中 / 超限）
 nx-rp loop cancel         # 取消循环（不带 --id 则取消全部活跃；记录保留）
-nx-rp loop off            # 停用 hook（本地级+项目级都摘，其余 hooks 不动）
+nx-rp loop off            # 停用 hook（三层都摘，其余 hooks 不动）
 ```
 
 `loop start` 的完整参数：
@@ -183,7 +183,7 @@ nx-rp loop start "把 src/foo.js 的测试补到全绿：每次迭代先跑 npm 
 | | 官方 ralph-loop 插件 | nx-rp loop |
 |---|---|---|
 | 启动 | 插件自带的 slash 命令 | `nx-rp loop start "..."`（CLI） |
-| 开关 | 装插件即全局生效 | `loop on` **按项目**写配置，只有本项目被拦 |
+| 开关 | 装插件即全局生效 | `loop on` **默认按项目**写配置；`--scope global` 才全局（没有归属本会话的循环会直接放行，不影响其他项目） |
 | 状态 | 项目内单文件（单实例） | `~/.nx-rp/loops/`（**数组，多会话并行**） |
 | 取消 | 插件自带的 cancel 命令 | `nx-rp loop cancel` |
 | 观测 | 读状态文件 | `loop status` / `loop log` / Web 面板 |
@@ -203,7 +203,7 @@ greenfield 探索
 
 | 症状 | 先查 |
 |---|---|
-| 回合照常结束，循环没起 | 本项目 `nx-rp loop on` 了吗；全局 `disableAllHooks`；是不是在**别的目录**跑的 |
+| 回合照常结束，循环没起 | 本项目 `nx-rp loop on` 了吗（或 `--scope global`）；全局 `disableAllHooks`；是不是在**别的目录**跑的 |
 | 停不下来 | 没设 `--completion-promise`；`--max-iterations 0`（无限）；用 `nx-rp loop cancel` |
 | 输出过承诺却没停 | 标签不在**最后一条 assistant 文本**里 / 承诺词不完全一致 / 子 agent 的输出不算 |
 | 循环归属混乱 | `nx-rp loop status` 看 `sessionId`；多会话并行时显式 `--session-id` |
