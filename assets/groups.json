@@ -4,7 +4,7 @@
   "groups": {
     "nx-rp": {
       "skills": ["nx-rp"],
-      "summary": "项目外部上下文管理（doc / deps / hook / 批注 / 召回）"
+      "summary": "项目外部上下文管理（deps / hook / 批注）"
     },
     "rp-loop": {
       "skills": ["rp-loop"],

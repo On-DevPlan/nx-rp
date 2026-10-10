@@ -2,7 +2,7 @@
 //
 // 文件头结构注释同步：recents 是全局列表，不属于任何 scope 桶。
 // 单一 JSON 文件 ~/.nx-rp/store.json，结构：
-//   { version, settings, scopes: { [cwdScope]: { docs, workflows } }, recents: [...] }
+//   { version, settings, scopes: { [cwdScope]: { workflows } }, recents: [...] }
 //
 // 为什么按 cwd 隔离而不是平铺：同一 nx-rp 可能被多个项目用，每项目独立范围；
 // 但用户的所有偏好（设置）还是全局共享 → 拆 settings 与 scopes。
@@ -40,6 +40,8 @@ function normalize(data) {
   if (!data || typeof data !== 'object') return base;
   base.version = data.version ?? VERSION;
   base.settings = { ...base.settings, ...(data.settings || {}) };
+  // doc 域（文档与召回）已删除：清掉它遗留的配置项
+  delete base.settings.docRoot;
   if (data.scopes && typeof data.scopes === 'object') {
     for (const [k, v] of Object.entries(data.scopes)) {
       base.scopes[k] = normalizeScope(v);
@@ -54,9 +56,8 @@ function normalize(data) {
 }
 
 function normalizeScope(v) {
-  if (!v || typeof v !== 'object') return { docs: [], workflows: {} };
+  if (!v || typeof v !== 'object') return { workflows: {} };
   return {
-    docs: Array.isArray(v.docs) ? v.docs : [],
     workflows: v.workflows && typeof v.workflows === 'object' ? v.workflows : {},
   };
 }
@@ -112,7 +113,7 @@ export async function mutateStore(fn) {
 export async function getCurrentScope() {
   const store = await loadStore();
   const k = _cwdScope();
-  if (!store.scopes[k]) store.scopes[k] = { docs: [], workflows: {} };
+  if (!store.scopes[k]) store.scopes[k] = { workflows: {} };
   return { key: k, scope: store.scopes[k], store };
 }
 
@@ -120,7 +121,7 @@ export async function getCurrentScope() {
 export async function getScope(key) {
   const store = await loadStore();
   const k = (key || _cwdScope()).toLowerCase();
-  return { key: k, scope: store.scopes[k] || { docs: [], workflows: {} }, store };
+  return { key: k, scope: store.scopes[k] || { workflows: {} }, store };
 }
 
 // 测试用：清除缓存与强制下次重读。

@@ -21,8 +21,8 @@
 批注可带 `line` 行号锚点——评论链接到文件的具体位置；目录批注无 `line`。
 
 **存储**：按路径分桶，`~/.nx-rp/annotations/<serializePath(file)>.json`。
-序列化规则与知识库目录一致（`D:\a_js\js_proj\nx-rp` → `d--a-js-js-proj-nx-rp`），
-全 ASCII 跨平台；一个路径一个桶，原子写（pid tmp + rename）。
+序列化把路径折成全 ASCII（`D:\a_js\js_proj\nx-rp` → `d--a-js-js-proj-nx-rp`），
+跨平台；一个路径一个桶，原子写（pid tmp + rename）。
 文件和目录各自一桶——同一路径下文件与目录名相同时也会冲突（serialize 同一串），
 **避开办法**：目录与同名文件不要并存于同一父目录。
 
@@ -107,7 +107,7 @@ nx-rp ann load --file D:\proj\src         # 目录 → 概览（dirs/files/total
 
 ## 七、边界（不变量）
 
-- 批注是**短评论**（≤4000 字符）——长文/成体系的知识请进 doc 域（文档与召回）
+- 批注是**短评论**（≤4000 字符）——长文/成体系的知识请另存文件维护
 - 批注挂在**绝对路径**上；路径移动后批注不会自动跟随（重新 add 即可）
 - `done` 只属于 todo；对 review/note 设 done 会被拒绝
 - `line` 只对文件批注有意义；对目录批注设 line 仍可存但不渲染

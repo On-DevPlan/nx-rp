@@ -9,7 +9,7 @@
 
 ## 一、它们是什么
 
-两个平级的 hook 模块（面板各自一个 tab，与链接/文档/工作流平级），开关互不影响：
+两个平级的 hook 模块（面板各自一个 tab，与依赖图 / 文件批注平级），开关互不影响：
 
 - **hook-prompt 提示词日志**（UserPromptSubmit）：每次提交提示词，
   事件 JSON 从 stdin 进入 `nx-rp hook capture`，追加一行到本地 JSONL。

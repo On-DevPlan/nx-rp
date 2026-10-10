@@ -170,29 +170,7 @@ export function assertSafeName(name, label = '名称') {
   return name;
 }
 
-// ─── 知识库（KB）目录 ─────────────────────────────────────────────
+// ─── 路径序列化（批注按路径分桶的文件名） ──────────────────────────
 export function serializePath(p) {
   return normalizeScope(p).replace(/[^A-Za-z0-9_-]/g, '-');
-}
-
-export function assertSafeKbName(name) {
-  if (!name || typeof name !== 'string' || /[\\/]/.test(name) || name.includes('..')) {
-    throw invalidInput('非法知识库目录名: ' + name);
-  }
-  return name;
-}
-
-export function docRootFor(docRootSetting) {
-  // 默认 docRoot 是 <APP_DIR>/doc；用户可在 store.settings.docRoot 里改。
-  // APP_DIR 为 null（前端路径）→ 返回 null 即可；调用方 (workspaceKbFor) 会
-  // 抛明确错误而不是返回假路径。
-  if (docRootSetting) return docRootSetting;
-  return APP_DIR ? `${APP_DIR}${_path().sep}doc` : null;
-}
-
-export function workspaceKbFor(cwd, docRootSetting) {
-  const name = assertSafeKbName(serializePath(cwd));
-  const path = _path();
-  if (!path) throw new Error('paths unavailable in browser');
-  return path.join(docRootFor(docRootSetting), name);
 }

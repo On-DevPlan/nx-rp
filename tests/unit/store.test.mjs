@@ -15,18 +15,18 @@ test('mutateStore: 原子写 + 缓存更新', async () => {
     forgetStore();
 
     const r1 = await mutateStore((s) => {
-      s.scopes['D:/a'] = { docs: [{ id: 'd1', title: 'x' }], workflows: {} };
+      s.scopes['D:/a'] = { workflows: { w1: { id: 'w1', title: 'x' } } };
       return s.scopes['D:/a'];
     });
-    assert.equal(r1.docs.length, 1);
+    assert.equal(Object.keys(r1.workflows).length, 1);
 
     // 文件被实际写入
     const onDisk = JSON.parse(readFileSync(storePath, 'utf8'));
-    assert.equal(onDisk.scopes['D:/a'].docs.length, 1);
+    assert.equal(Object.keys(onDisk.scopes['D:/a'].workflows).length, 1);
 
     // 缓存能看见
     const back = await loadStore();
-    assert.equal(back.scopes['D:/a'].docs.length, 1);
+    assert.equal(Object.keys(back.scopes['D:/a'].workflows).length, 1);
   } finally {
     delete process.env.NX_RP_STORE;
     rmSync(dir, { recursive: true, force: true });
@@ -38,17 +38,17 @@ test('normalize: 老数据缺新字段自动补默认值', async () => {
   const storePath = join(dir, 'store.json');
   process.env.NX_RP_STORE = storePath;
   try {
-    // 写一个旧版格式（只有 version + scopes[cwd].docs）
+    // 写一个旧版格式（含 doc 域删除前的 docs 遗留数据）
     writeFileSync(storePath, JSON.stringify({
       version: 1,
-      scopes: { 'D:/a': { docs: [] } },  // 没有 workflows
+      scopes: { 'D:/a': { docs: [{ id: 'd1' }] } },  // 没有 workflows
     }), 'utf8');
 
     const { loadStore, forgetStore } = await import('../../src/core/store.js');
     forgetStore();
     const s = await loadStore();
     assert.ok(s.scopes['D:/a'], 'scope 应在');
-    assert.ok(Array.isArray(s.scopes['D:/a'].docs), 'docs 应自动补默认值');
+    assert.equal(s.scopes['D:/a'].docs, undefined, 'doc 域已删除，遗留 docs 数据应被清掉');
     assert.ok(s.scopes['D:/a'].workflows && typeof s.scopes['D:/a'].workflows === 'object', 'workflows 应自动补默认值');
     assert.equal(s.settings.defaultPort, 7820, 'settings.defaultPort 应自动补默认值');
   } finally {
@@ -74,8 +74,8 @@ test('cwd 隔离：mutateStore 只在当前 process.cwd() 对应的 scope 写入
     // 在当前 cwd 下 mutate，直接走 mutateStore 验证隔离语义
     await mutateStore((store) => {
       const k = cwdScope();
-      if (!store.scopes[k]) store.scopes[k] = { docs: [], workflows: {} };
-      store.scopes[k].docs.push({ id: 'd_curr', title: 'now' });
+      if (!store.scopes[k]) store.scopes[k] = { workflows: {} };
+      store.scopes[k].workflows.w_curr = { id: 'w_curr', title: 'now' };
       return store.scopes[k];
     });
 
@@ -83,7 +83,7 @@ test('cwd 隔离：mutateStore 只在当前 process.cwd() 对应的 scope 写入
     const { loadStore } = await import('../../src/core/store.js');
     const back = await loadStore();
     assert.ok(back.scopes[a], '当前 cwd 应在 scopes 里');
-    assert.equal(back.scopes[a].docs.length, 1);
+    assert.equal(Object.keys(back.scopes[a].workflows).length, 1);
     // 其它 scope 不应有副作用
     for (const k of Object.keys(back.scopes)) {
       assert.equal(k, a, '不应有其它 scope 被自动创建');
@@ -104,8 +104,8 @@ test('mutateStore: fn 抛错则整个事务不落盘', async () => {
     forgetStore();
 
     await assert.rejects(() => mutateStore((s) => {
-      s.scopes['D:/a'] = { docs: [], workflows: {} };
-      s.scopes['D:/a'].docs.push({ id: 'd_x', title: 'x' });
+      s.scopes['D:/a'] = { workflows: {} };
+      s.scopes['D:/a'].workflows.w_x = { id: 'w_x', title: 'x' };
       throw new Error('boom');
     }), /boom/);
 

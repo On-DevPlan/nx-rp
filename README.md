@@ -2,9 +2,8 @@
 
 **项目外部上下文信息管理，让项目开发更轻。**
 
-`nx-rp` = `npx-repo` 的缩写。给当前项目（cwd）统一登记项目开发用得着的外部信息（上下文文档、源码依赖图、提示词日志、Skill 追踪、文件批注……），存在 `~/.nx-rp/store.json`，按 cwd 自动隔离 scope。
+`nx-rp` = `npx-repo` 的缩写。给当前项目（cwd）统一登记项目开发用得着的外部信息（源码依赖图、提示词日志、Skill 追踪、文件批注……），存在 `~/.nx-rp/store.json`，按 cwd 自动隔离 scope。
 
-- **文档（doc）**：上下文 Markdown 短文——给 agent 当 prompt 上下文
 - **依赖图（deps）**：扫 `src/` 的 import 关系（.js/.mjs/.cjs/.jsx，词法清洗后匹配），
   Graphviz WASM 渲染；面板双模式（预览/编辑 DOT 文本）+ .dot 另存/导入；只读——从源码推导
 - **提示词日志（hook）**：Claude Code UserPromptSubmit hook——每次提交的提示词按目录记进本地 JSONL；面板里有「提示词日志」页
@@ -57,10 +56,6 @@ nx-rp loop status            看 hook 开关 + 当前目录的循环与轮次
 nx-rp loop log               看每轮判定审计（继续/命中/超限；--all 跨目录）
 nx-rp loop cancel            取消循环（不带 --id 则取消全部活跃）
 nx-rp loop off               停用（本地级+项目级都摘，其余 hooks 不动）
-nx-rp zg onboard             召回引擎引导：装 zg → 拿 key → 选模型 → 用起来
-nx-rp doc export             doc 知识实例文件化（镜像到知识库目录，可被 zg 索引）
-nx-rp zg index / query       知识库建索引 / 语义召回（远程 qwen embedding）
-nx-rp doc root --set <dir>   改全局知识库根（自动迁移）
 nx-rp ann load / add         加载文件预览（1000 字符限）/ 挂批注（评价/待办/思考）
 nx-rp ann todos              跨文件的未完成待办清单
 ```
