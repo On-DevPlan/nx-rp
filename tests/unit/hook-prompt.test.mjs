@@ -336,7 +336,8 @@ test('capture 后日志文件落在 promptsDir 下（哈希文件名，全 ASCII
   const mod = await import(serviceUrl());
   const r = await mod.captureRecord({ prompt: 'p', cwd: join(tmp, '中文 目录') });
   assert.ok(r.file.startsWith(promptsDir));
-  assert.match(r.file, /^[A-Za-z0-9:_\\/.-]+$/);
+  // ~ 在白名单里：Windows 8.3 短路径名（如 MINISF~1）可能出现在 tmpdir 前缀
+  assert.match(r.file, /^[A-Za-z0-9:_~/\\.-]+$/);
   assert.ok(existsSync(r.file));
 });
 
