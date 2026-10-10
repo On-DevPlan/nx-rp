@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.10.0 / 2026-10-10
+
+- **删除「文档与召回」模块（doc 域）**（破坏性变更——`nx-rp doc *` / `nx-rp zg *` 命令与
+  `/api/docs*` / `/api/zg/*` 路由不再存在）：
+  - 整个 `src/modules/doc/` 模块下线：15 条 action（doc 域 8 条 CRUD/导出/root + zg 召回
+    引擎 7 条）、CLI 命令（`doc list/get/add/update/remove/export/root`、
+    `zg install/auth/onboard/index/query/status/migrate`）、HTTP 路由、Web「文档与召回」tab
+  - store.json 的 scope 结构移除 `docs` 集合（`normalizeScope` 读旧文件时自动丢弃，
+    workflows / recents 不受影响；`settings.docRoot` 遗留值同步剥离）
+  - 库导出（`import { doc, zg } from 'nx-rp'`）同步移除
+  - core/paths.js 删 `assertSafeKbName` / `docRootFor` / `workspaceKbFor`（知识库目录定位
+    整套）；`serializePath` 保留——批注按路径分桶仍在用
+  - 文档同步：SKILL.md（frontmatter 触发词去掉「上下文文档 / 召回 / 知识库 / zvec-grep /
+    zg / semantic recall / embedding」）/ README / groups.json / annotations / prompt-log /
+    deps-graph 示例；参考文档 `references/zg-recall.md` 删除
+  - 测试：`doc-zg.test.mjs` 删除；store / deps / skill-get 改写（新增「遗留 docs 数据应
+    被清掉」断言）
+- **loop：Stop hook 新增用户级作用域（`--scope global`）**（特性型）：
+  - 背景：之前 loop 只支持项目本地级（默认，gitignored）与项目级（团队共享）。
+    本机多项目共用 hook 需逐个配——开启循环前要切到每个项目目录开一次。
+  - 新选项 `loop on --scope global`：写 `~/.claude/settings.json`，本机所有项目
+    生效；`loop off` 同步摘全局层；`loop status` 三层都报（global / local / shared），
+    `activeScope` 取最具体（shared > local > global），新增 `enabledScopes` 数组
+    反映多层同时启用（多层同时启用时给出 ⚠ 提示——同一事件 hook 会跑多次）
+  - 全局为什么敢开：Stop 判决先按会话认领循环（pickLoop），无归属本会话的循环
+    直接放行；循环状态按 cwd 分文件——无关项目零影响，只多一次 hook 进程启动
+  - 细节修正：`disableAllHooks` 取**最先定义**的那层（不再 OR 起来）——避免
+    把「被项目显式关掉的全局面板开关」误报为生效中
+  - CLI/面板文案：`loop on --scope global` 补一句「本机所有项目生效……无关项目
+    零影响」；`loop off` summary 改为「全局+本地级+项目级都摘」
+  - 函数名 `projectSettingsPath` → `settingsPathFor`（现在不止项目级），新增
+    导出常量 `SCOPES = ['global', 'local', 'shared']`
+  - 测试 6 条新增（global 写盘与 .gitignore 不碰 / 三层 status 报法 / 全局 off
+    摘干净 / disableAllHooks 优先级 / 全局层家目录不可知的降级等）
+- **hook 域视图层抽共用 hook（useHookDomain）**（重构）：
+  - 提示词日志 / Skill 追踪 / 循环三个 hook 视图原来各自复制同一套 toolbar /
+    加载错误卡 / 「Hook 状态」卡（状态/配置文件行 + disableAllHooks / corrupt
+    警告段）/ 启停按钮 / 确认弹窗 / 失败重试
+  - 新增 `src/web/frontend/components/hook-domain.jsx`（158 行）：`useHookDomain(cfg)`
+    一个 hook 负责全部共用部分（数据：status / loadError / 启停 / 错误；节点：
+    toolbar / errorCard / statusCard）；视图按自己的卡片顺序摆放节点
+  - 三个视图瘦身：hook-prompt / hook-skill / loop 各减约 150 行
+  - 差异点走 cfg 注入（静态文案传字符串；依赖 status 的差异走 `(status) => …` 回调，
+    status 就绪后才被调用）；`afterRefresh` 在 refresh 的 try 内执行——视图自己的
+    数据（记录表/统计表/审计日志）跟着状态一起拉，失败落进同一张错误卡，
+    重试一次救全部
+  - `cfg` 走 ref 缓存（避免新闭包反复触发 effect 重跑），refresh 引用稳定
+- **附：hook-prompt 单测 ASCII 断言放宽**（非破坏性；存量环境缺陷）：
+  - 全 ASCII 正则补 `~`——Windows 8.3 短路径名（如 `MINISF~1`）会出现在
+    tmpdir 前缀，导致该断言在短路径环境下必失败（已在未改动的 HEAD 上复现确认）
+- 测试 228 项 + smoke 7 项全绿
+
 ## 0.9.9 / 2026-10-02
 
 - **loop：与官方 hook 语义对齐——闭环优先 + 8 续杯感知**（修复型 + 特性型）
