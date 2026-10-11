@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.11.0 / 2026-10-11
+
+- **`chart` 模块重命名 + CLI 命名空间迁移**（破坏性变更——`nx-rp deps *` 与 `nx-rp deps archify *`
+  命令、`/api/deps/archify/*` 路由、Web「依赖图」tab 名都改了）：
+  - `nx-rp deps {scan,save,load}` → `nx-rp chart {scan,save,load}`（scan 与 save/load 仍是同一 action id 前缀）
+  - `nx-rp deps archify {list,discover,add,remove,view}` → `nx-rp chart archify {list,discover,add,remove,view}`
+  - Web tab 改名为「图表」；dot 依赖图与 archify HTML 同源一个 chart 模块，两个并列视图（依赖图 + 图表）
+  - src/modules/deps/ → src/modules/chart/；所有 action id（`chart.scan/save/load`、
+    `chart.archify.list/discover/add/remove/view`）同步改名
+  - 旧测试文件 `deps.test.mjs` / `deps-archify.test.mjs` → `chart.test.mjs` / `chart-archify.test.mjs`
+  - 文档：assets/nx-rp/references/deps-graph.md → chart-graph.md（移除 archify 子模块章节，
+    改为引用 rp-archify skill）；README / SKILL.md / groups.json 同步
+- **archify 图表登记子模块（特性型）**（不调 archify CLI、不从源码自动出图——
+  图一律出自 archify skill 的精修流程，机器自动出图不可信）：
+  - `nx-rp chart archify add --file x.html [--candidate c.json] [--name 名]` 把 HTML + 元数据
+    拷入 scope 存储 `~/.nx-rp/archify/<cwd哈希>/`；按 cwd 隔离多项目
+  - `chart archify discover` 扫 `~/.nx-rp/.archify-cwd/` 未登记产物（产物目录默认放用户目录，不落项目）
+  - `chart archify remove --id <id>` 移除登记与副本（原 `.archify/` 产物不受影响）
+  - `chart archify view` HTTP 流式直出（面板 iframe `?embed=1` 嵌入）；CLI 打印文件绝对路径
+  - 面板「图表」模式下拉切换 + 移除按钮；iframe 经 `?scope=` 显式透传激活目录
+    （导航请求不带 `x-nx-rp-scope` 头）
+  - 新增 `rp-archify` skill（`nx-rp skill install --group=rp-archify`）：agent SOP 两步
+    ——archify 画图 → `chart archify add` 登记关联；产物默认放用户目录，统一查看
+- **面板 UX 重整（特性型）**：
+  - 工具栏按组分段：视图（依赖图 / 图表）+ 模式（预览 / 编辑）/ 数据（重新扫描 / 导入 / 另存）/
+    缩放（−/100%/＋）/ 管理（卡片 / 扫描 / 移除），组间分隔线 + muted 小号标签
+  - 激活态用 `--accent` 强调色（黑底白字 vs 琥珀底白字）；旧的「反色变白」设计的
+    「按钮消失」错觉已修（loop view / hook-domain 同样受益）
+  - 图表画布 `flex:1` 占满剩余视口高度，去掉固定 `height:640` 的底部留白
+- **存储扩展**：`src/core/paths.js` 新增 `ARCHIFY_DIR`（`~/.nx-rp/archify/`）与
+  `archifyScopeDirFor(cwd)`（按 cwd sha1 前 12 位分桶），与 `prompts/skills/loops` 同一模式
+
 ## 0.10.0 / 2026-10-10
 
 - **删除「文档与召回」模块（doc 域）**（破坏性变更——`nx-rp doc *` / `nx-rp zg *` 命令与
