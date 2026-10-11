@@ -5,6 +5,7 @@
   --soft-2: #ebedf0;
   --mid: #8b9096;
   --bad: #b3261e;
+  --accent: #d97706;   /* 强调色：「当前选中」「草稿未保存」等「区别于默认」的标记 */
   --border: 1px solid var(--soft-2);
   --row-h: 28px;
   --btn-h: 32px;
@@ -62,6 +63,7 @@ main { padding: 16px; }
 .btn:active:not(:disabled) { box-shadow: var(--shadow-relief-press); transform: translateY(1px); }
 .btn:disabled { background: var(--soft); color: var(--mid); box-shadow: var(--shadow-relief-inset); cursor: not-allowed; }
 .btn.ghost { background: var(--soft); color: var(--ink); }
+.btn.strong { background: var(--accent); color: var(--paper); } /* 选中态：强调色，与默认黑底区分明显 */
 .btn.small { height: 22px; padding: 0 8px; font-size: 11px; border-radius: 6px; }
 .btn.danger { background: var(--bad); color: #fff; }
 

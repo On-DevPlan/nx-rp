@@ -4,8 +4,10 @@
 
 `nx-rp` = `npx-repo` 的缩写。给当前项目（cwd）统一登记项目开发用得着的外部信息（源码依赖图、提示词日志、Skill 追踪、文件批注……），存在 `~/.nx-rp/store.json`，按 cwd 自动隔离 scope。
 
-- **依赖图（deps）**：扫 `src/` 的 import 关系（.js/.mjs/.cjs/.jsx，词法清洗后匹配），
-  Graphviz WASM 渲染；面板双模式（预览/编辑 DOT 文本）+ .dot 另存/导入；只读——从源码推导
+- **图表（chart）**：项目图表域——面板「依赖图」（扫 `src/` 的 import 关系）+ 「图表」
+  （archify 产物登记展示）双视图同源模块。dot 侧 Graphviz WASM 渲染、分层着色、
+  跨层边红；只读——从源码推导。archify 侧图一律出自 archify skill 的精修流程，
+  agent 用 `/archify` 画图后 `chart archify add` 登记，多图下拉切换，见 `rp-archify` skill
 - **提示词日志（hook）**：Claude Code UserPromptSubmit hook——每次提交的提示词按目录记进本地 JSONL；面板里有「提示词日志」页
 
 CLI 与 Web 面板同源（一条 action 同时声明 CLI 与 HTTP）。agent 通过 CLI 自助管理。
@@ -39,10 +41,13 @@ nx-rp skill get              把内置 skill 文档（SKILL.md / references/*）
 nx-rp help                   列出全部命令
 nx-rp routes                 命令 ↔ 路由对照表
 nx-rp bootstrap --json       一次性拿齐上下文
-nx-rp deps                   扫 src/ 的 import 关系 → 依赖图（DOT 文本；
+nx-rp chart                  扫 src/ 的 import 关系 → 依赖图（DOT 文本；
                              --json 拿 {nodes, edges, stats}；面板可视化）
-nx-rp deps save --file <f>   依赖图 DOT 落盘为 .dot 文件（graphviz 交接）
-nx-rp deps load --file <f>   读外部 .dot 文本（导入预览）
+nx-rp chart save --file <f>  依赖图 DOT 落盘为 .dot 文件（graphviz 交接）
+nx-rp chart load --file <f>  读外部 .dot 文本（导入预览）
+nx-rp chart archify list     已登记的 archify 图表（面板「图表」模式数据源）
+nx-rp chart archify add      把 archify 产物 HTML 拷入 scope 存储并登记
+nx-rp chart archify discover / remove / view    发现产物 / 移除登记 / 查看路径
 nx-rp hook on                启用提示词日志 hook（写 ~/.claude/settings.json）
 nx-rp hook log               看当前目录的提示词记录（--all 跨目录）
 nx-rp hook off               停用（只摘自己的 entry，其余 hooks 不动）

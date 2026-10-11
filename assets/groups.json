@@ -9,6 +9,10 @@
     "rp-loop": {
       "skills": ["rp-loop"],
       "summary": "自引用循环（Ralph 技术）——迭代到完成，Stop hook 拦退出"
+    },
+    "rp-archify": {
+      "skills": ["rp-archify"],
+      "summary": "archify 图表登记——项目与多图表关系维护，面板「图表」模式切换查看"
     }
   }
 }

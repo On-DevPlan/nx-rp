@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const ROOT = join(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'), '..');
-const serviceUrl = () => pathToFileURL(join(ROOT, 'src', 'modules', 'deps', 'service.js')).href;
+const serviceUrl = () => pathToFileURL(join(ROOT, 'src', 'modules', 'chart', 'service.js')).href;
 
 let tmp;
 
@@ -208,10 +208,10 @@ test('loadDot：不存在 / 超限 / 二进制 拒绝', async () => {
     /二进制内容/);
 });
 
-test('deps.load 只声明 CLI、不再暴露 HTTP（HTML 视图导入走前端 FileReader）', async () => {
+test('chart.load 只声明 CLI、不再暴露 HTTP（HTML 视图导入走前端 FileReader）', async () => {
   const { ACTIONS } = await import(pathToFileURL(join(ROOT, 'src', 'runtime', 'registry.js')).href);
-  const load = ACTIONS.find((a) => a.id === 'deps.load');
-  assert.ok(load, 'deps.load action 必须存在');
+  const load = ACTIONS.find((a) => a.id === 'chart.load');
+  assert.ok(load, 'chart.load action 必须存在');
   assert.equal(load.http, null, 'http 必须显式 null（CLI 专属）');
-  assert.deepEqual(load.cli, ['deps', 'load']);
+  assert.deepEqual(load.cli, ['chart', 'load']);
 });

@@ -166,7 +166,7 @@ test('B8 get 未知 ref → 抛错，列出可用的 references/*.md（裸名形
     (err) => {
       assert.equal(err.code, 'INVALID_INPUT');
       assert.match(err.message, /未找到 ref: nope/);
-      assert.match(err.message, /可用:.*annotations.*deps-graph.*prompt-log/);
+      assert.match(err.message, /可用:.*annotations.*chart-graph.*prompt-log/);
       // 不能带 .md 扩展名（用户输入的是裸名，列表对齐）
       assert.doesNotMatch(err.message, /annotations\.md/);
       return true;
@@ -343,9 +343,9 @@ test('list：列出所有 skill + 默认 install + groups；默认 install 自�
   const skill = await loadSkill();
   const r = await skill.run(['list']);
   assert.ok(Array.isArray(r.skills) && r.skills.includes('nx-rp') && r.skills.includes('rp-loop'),
-    'assets/ 下两个 skill 都应列出：' + JSON.stringify(r.skills));
+    'assets/ 下的 skill 都应列出：' + JSON.stringify(r.skills));
   assert.equal(r.defaultGroup, 'nx-rp', '默认 install = package.json.name');
-  assert.deepEqual(r.groups, ['nx-rp', 'rp-loop']);
+  assert.deepEqual(r.groups, ['nx-rp', 'rp-archify', 'rp-loop']);
   assert.equal(r.source, 'manifest', '当前 groups.json 存在 → 走 manifest 而非降级');
   // render：默认 install 一项有"（默认 install）"标记，其它没有
   const out = skill.render(r);

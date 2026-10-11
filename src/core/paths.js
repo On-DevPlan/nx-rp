@@ -77,13 +77,21 @@ export let SNAPSHOTS_DIR = (() => {
   const path = _path();
   return h && path ? path.join(h, '.nx-rp', 'snapshots') : null;
 })();
+// archify 图表登记：按 cwd 哈希分目录（registry.json + 各图表 HTML 副本），
+// 同 prompts/skills/loops 的模式。图表是「登记进来的外部产物」，不落项目目录。
+export let ARCHIFY_DIR = (() => {
+  const h = home();
+  const path = _path();
+  return h && path ? path.join(h, '.nx-rp', 'archify') : null;
+})();
 
-export function setHookPaths({ settingsPath, promptsDir, skillsDir, loopsDir, snapshotsDir } = {}) {
+export function setHookPaths({ settingsPath, promptsDir, skillsDir, loopsDir, snapshotsDir, archifyDir } = {}) {
   if (settingsPath !== undefined) CLAUDE_SETTINGS_PATH = settingsPath;
   if (promptsDir !== undefined) PROMPTS_DIR = promptsDir;
   if (skillsDir !== undefined) SKILLS_DIR = skillsDir;
   if (loopsDir !== undefined) LOOPS_DIR = loopsDir;
   if (snapshotsDir !== undefined) SNAPSHOTS_DIR = snapshotsDir;
+  if (archifyDir !== undefined) ARCHIFY_DIR = archifyDir;
 }
 
 // hook 日志按目录哈希分文件：文件名全 ASCII，避免 cwd 里的中文/空格进路径。
@@ -115,6 +123,13 @@ export function loopsFileFor(cwd) {
 // loop 审计日志：与状态同 hash，扩展名不同——落同一目录便于人肉对照
 export function loopsLogFileFor(cwd) {
   return hashOf(LOOPS_DIR, cwd, '.jsonl');
+}
+
+// archify 登记：每个 cwd 一个目录（registry.json + 各图表 HTML 副本）。
+// 与 promptsFileFor 的差异只在「目录 vs 单文件」——哈希分桶逻辑同源。
+export function archifyScopeDirFor(cwd) {
+  const h = hashOf(ARCHIFY_DIR, cwd, '');
+  return h ? { key: h.key, hash: h.hash, dir: h.file } : null;
 }
 
 export function storePathFromEnv() {
