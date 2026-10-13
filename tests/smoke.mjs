@@ -25,7 +25,7 @@ test('smoke: registry 装载自检通过、三端命令表可生成', async () =
     'hook-prompt.capture', 'hook-prompt.on', 'hook-prompt.off', 'hook-prompt.status', 'hook-prompt.log',
     'hook-skill.track', 'hook-skill.slash', 'hook-skill.on', 'hook-skill.off', 'hook-skill.status', 'hook-skill.stats',
     'loop.stop', 'loop.start', 'loop.on', 'loop.off', 'loop.status', 'loop.cancel', 'loop.log',
-    'system.recents', 'system.recents.touch',
+    'system.recents', 'system.recents.touch', 'system.recents.remove',
   ]) {
     assert.ok(ids.has(id), `缺 action: ${id}`);
   }
@@ -51,6 +51,12 @@ test('smoke: registry 装载自检通过、三端命令表可生成', async () =
   // recents：读端有 CLI，写端纯 HTTP（登记入口是面板/serve，与 capture 相反的方向）
   assert.ok(Array.isArray(httpById.get('system.recents')), 'recents 缺 HTTP 路由');
   assert.equal(offById.get('system.recents.touch').cli, null, 'recents.touch 是面板/serve 专用，不应有 CLI');
+  // remove：与 touch 对称，有 CLI 也有 HTTP（面板右上角 hover × 与 CLI 共用入口）
+  const remove = offById.get('system.recents.remove');
+  assert.ok(remove, 'system.recents.remove 必须存在');
+  assert.deepEqual(remove.cli, ['recents', 'remove'], 'recents.remove CLI 路径应为 [recents, remove]');
+  assert.ok(Array.isArray(remove.http) && remove.http[0] === 'DELETE' && remove.http[1] === '/api/recents',
+    'recents.remove HTTP 应为 DELETE /api/recents');
 });
 
 test('smoke: bootstrap 携带 recents 与 serverScope', async () => {
@@ -66,6 +72,52 @@ test('smoke: bootstrap 携带 recents 与 serverScope', async () => {
     assert.ok(Array.isArray(b.recents), 'bootstrap 应携带 recents 数组');
     assert.equal(typeof b.serverScope, 'string', 'bootstrap 应携带 serverScope');
     assert.ok(b.serverScope.length > 0);
+  } finally {
+    delete process.env.NX_RP_STORE;
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('smoke: system.recents.remove 业务语义（touch 三个 / remove 一个 / list 剩两个）', async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'nxrp-smoke-rm-'));
+  const dirA = join(tmp, 'a');
+  const dirB = join(tmp, 'b');
+  const dirC = join(tmp, 'c');
+  await import('node:fs/promises').then((f) => Promise.all([f.mkdir(dirA), f.mkdir(dirB), f.mkdir(dirC)]));
+  process.env.NX_RP_STORE = join(tmp, 'store.json');
+  try {
+    const { forgetStore } = await import(pathToFileURL(join(ROOT, 'src', 'core', 'store.js')).href);
+    forgetStore();
+    const sys = await import(pathToFileURL(join(ROOT, 'src', 'modules', 'system', 'index.js')).href);
+    const touch = sys.touchRecent;
+    const remove = sys.removeRecent;
+    const list = sys.listRecents;
+
+    // 三个目录都登记：列表应是 [c, b, a]（最新在前）
+    await touch(dirA);
+    await touch(dirB);
+    await touch(dirC);
+    const before = await list();
+    assert.equal(before.length, 3, '登记三个目录后 recents 应有 3 条');
+    assert.equal(before[0].path, dirC, '最新触发的应排在最前');
+    assert.equal(before[2].path, dirA, '最先登记的应排在最后');
+
+    // 移除中间那条 b：列表剩 [c, a]，移除结果应返回 { status: 'ok', scope }
+    const r1 = await remove(dirB);
+    assert.equal(r1.status, 'ok', '存在的目录应返回 ok');
+    const after = await list();
+    assert.equal(after.length, 2, '移除一条后应剩 2 条');
+    assert.deepEqual(after.map((x) => x.path), [dirC, dirA], '剩余条目顺序应保持');
+
+    // 移除不存在的目录：业务结果是 not_found，不抛异常（删除幂等）
+    const r2 = await remove(dirB);
+    assert.equal(r2.status, 'not_found', '已移除的目录再删应返回 not_found');
+    const r3 = await remove(join(tmp, 'nonexistent'));
+    assert.equal(r3.status, 'not_found', '从未登记的目录应返回 not_found');
+
+    // 缺 path 应抛 invalidInput
+    await assert.rejects(() => remove(''), /缺少目录路径/);
+    await assert.rejects(() => remove(null), /缺少目录路径/);
   } finally {
     delete process.env.NX_RP_STORE;
     await rm(tmp, { recursive: true, force: true });

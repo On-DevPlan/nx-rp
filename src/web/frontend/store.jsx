@@ -51,9 +51,21 @@ export function StoreProvider({ children }) {
     setScopeTick((t) => t + 1);
   }, [patchUi, refreshBoot]);
 
+  // 移除一个最近目录：DELETE + 若是当前激活则清掉 + 重拉 + 重挂载。
+  // 与 switchScope 链路对称——同样以 scopeTick 收尾，保证视图在删除后立刻看到空数据。
+  const removeRecent = useCallback(async (entry) => {
+    await api('/api/recents', { method: 'DELETE', body: { path: entry.path } }).catch(() => {});
+    if (ui.activeScope?.scope === entry.scope) {
+      setActiveScope(null);
+      patchUi({ activeScope: null });
+    }
+    await refreshBoot().catch(() => {});
+    setScopeTick((t) => t + 1);
+  }, [patchUi, refreshBoot, ui.activeScope]);
+
   const value = useMemo(
-    () => ({ boot, ui, patchUi, refreshBoot, switchScope, scopeTick }),
-    [boot, ui, patchUi, refreshBoot, switchScope, scopeTick]
+    () => ({ boot, ui, patchUi, refreshBoot, switchScope, removeRecent, scopeTick }),
+    [boot, ui, patchUi, refreshBoot, switchScope, removeRecent, scopeTick]
   );
   return <StoreCtx.Provider value={value}>{children}</StoreCtx.Provider>;
 }

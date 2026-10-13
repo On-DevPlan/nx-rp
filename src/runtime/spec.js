@@ -50,7 +50,10 @@ export function flagSpecsOf(action) {
 // ─── 用法串生成 ─────────────────────────────────────────────────────
 
 export function usageOf(action) {
-  const parts = ['nx-rp', ...cliPathsOf(action)[0]];
+  // cli 为 null 的纯 HTTP action（cliPathsOf 返回 []，[0] 是 undefined）：
+  // 不能 spread undefined 直接抛——给一个「纯 HTTP」占位串，让 applySpec 报错时仍能带出上下文。
+  const cliPath = cliPathsOf(action)[0] || ['<http-only>'];
+  const parts = ['nx-rp', ...cliPath];
   for (const a of argSpecsOf(action)) parts.push(a.required ? `<${a.name}>` : `[${a.name}]`);
   for (const f of flagSpecsOf(action)) {
     let token;

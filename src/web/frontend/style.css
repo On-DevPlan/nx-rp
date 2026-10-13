@@ -30,14 +30,30 @@ header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding
 header nav { display: flex; flex-wrap: wrap; gap: 4px; }
 header .meta { margin-left: auto; min-width: 0; max-width: 46vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mid); font-size: 12px; font-family: ui-monospace, Consolas, monospace; }
 
-/* 最近目录切换器：details 收起只占一行 summary，展开是紧凑列表 */
-header details.recents { position: relative; font-size: 12px; }
-header details.recents summary { cursor: pointer; color: var(--mid); user-select: none; white-space: nowrap; }
-header details.recents summary:hover { color: var(--ink); }
-header details.recents ul { position: absolute; right: 0; top: calc(100% + 6px); margin: 0; padding: 4px; list-style: none; background: var(--paper); border: 1px solid var(--soft-2); border-radius: 8px; box-shadow: var(--shadow-relief); max-height: 320px; overflow: auto; min-width: 200px; z-index: 20; }
-header details.recents li button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 5px 8px; border-radius: 5px; cursor: pointer; font-size: 12px; font-family: ui-monospace, Consolas, monospace; max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-header details.recents li button:hover { background: var(--soft); color: var(--ink); }
-header details.recents li button.active { color: var(--ink); font-weight: 600; }
+/* 最近目录切换器：受控下拉，触发按钮常驻 header，菜单绝对定位悬挂在右上
+   —— 替换原先的 <details> 切换器（不支持"点击外部收回"也无法在 hover 行内嵌删除按钮） */
+header .recents-wrap { position: relative; font-size: 12px; }
+header .recents-trigger { border: 0; background: none; cursor: pointer; color: var(--mid); user-select: none; white-space: nowrap; padding: 5px 10px; border-radius: 6px; font-size: 12px; font-family: ui-monospace, Consolas, monospace; display: inline-flex; align-items: center; gap: 4px; }
+header .recents-trigger:hover { color: var(--ink); background: var(--soft); }
+header .recents-trigger .recents-count { color: var(--mid); font-size: 11px; }
+header .recents-trigger .recents-caret { font-size: 10px; margin-left: 2px; opacity: .7; }
+header .recents-menu { position: absolute; right: 0; top: calc(100% + 6px); margin: 0; padding: 4px; list-style: none; background: var(--paper); border: 1px solid var(--soft-2); border-radius: 8px; box-shadow: var(--shadow-relief); max-height: 360px; overflow: auto; min-width: 240px; z-index: 20; }
+header .recents-menu li { position: relative; display: flex; align-items: stretch; }
+header .recents-menu li.active .recents-item { color: var(--ink); font-weight: 600; background: var(--soft); }
+/* 主切换按钮：占满 li 宽度；recents-name 是末段目录名（展示用），recents-path 是完整路径（辅助） */
+header .recents-menu li .recents-item { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; border: 0; background: none; padding: 6px 32px 6px 10px; border-radius: 5px; cursor: pointer; font-size: 12px; font-family: ui-monospace, Consolas, monospace; text-align: left; }
+header .recents-menu li .recents-item:hover { background: var(--soft); }
+header .recents-menu li .recents-name { font-weight: 600; flex-shrink: 0; }
+header .recents-menu li .recents-path { color: var(--mid); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+header .recents-menu li .recents-check { color: var(--accent); font-weight: 700; margin-left: 4px; }
+/* 删除按钮：绝对定位到右侧，默认透明 → 行 hover 才显形 */
+header .recents-menu li .recents-del { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); opacity: 0; border: 0; background: none; cursor: pointer; padding: 2px 8px; border-radius: 4px; color: var(--mid); font-size: 14px; line-height: 1; transition: opacity 0.12s, background 0.12s, color 0.12s; }
+header .recents-menu li:hover .recents-del { opacity: 1; }
+header .recents-menu li .recents-del:hover { background: var(--bad); color: #fff; }
+/* 添加目录：分隔线 + 弱化文案（与列表项视觉上明显不一样） */
+header .recents-menu li.recents-add { border-top: 1px solid var(--soft-2); margin-top: 4px; padding-top: 4px; }
+header .recents-menu li.recents-add button { width: 100%; border: 0; background: none; cursor: pointer; padding: 6px 10px; border-radius: 5px; color: var(--mid); font-size: 12px; text-align: left; font-style: italic; }
+header .recents-menu li.recents-add button:hover { background: var(--soft); color: var(--ink); }
 
 .tab { border: 1px solid transparent; background: none; padding: 5px 10px; border-radius: 6px; cursor: pointer; color: var(--mid); font-size: 13px; }
 .tab:hover { background: var(--soft); }

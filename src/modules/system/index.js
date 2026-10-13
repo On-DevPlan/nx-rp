@@ -34,6 +34,27 @@ async function listRecents() {
   return store.recents;
 }
 
+// 命名导出：测试与库用方可单独 import（同 touchRecent 的导出形态）。
+export { listRecents };
+
+// 从最近目录列表移除一个条目：按 normalizeScope 后的 key 过滤。
+//
+// 业务结果用 { status } 返回，不抛异常——调用方要拿它分支判断
+// "目录本来就不在列表里"（幂等视角），与 touchRecent 的失败抛异常形成
+// 互补：登记是「目标不在就报错」，移除是「目标不在也算成功」。
+async function removeRecent(rawPath) {
+  if (!rawPath || typeof rawPath !== 'string') throw invalidInput('缺少目录路径');
+  const scope = normalizeScope(rawPath);
+  return mutateStore((store) => {
+    const before = store.recents.length;
+    store.recents = store.recents.filter((r) => r.scope !== scope);
+    if (store.recents.length === before) return { status: 'not_found', scope, path: rawPath };
+    return { status: 'ok', scope };
+  });
+}
+
+export { removeRecent };
+
 async function bootstrap() {
   const store = await loadStore();
   return {
@@ -122,6 +143,18 @@ export default {
       summary: '登记/置顶一个最近目录（body: { path }，必须是存在的目录）',
       flags: { path: { type: 'string', required: true, hint: '目录路径' } },
       run: (ctx) => touchRecent(ctx.path),
+    },
+    {
+      // remove 与 touch 对称：touch 用 POST + body，remove 用 DELETE + body（同形态对齐）。
+      // 走 body 而非 URL 占位符 :scope，避开 ctx 契约里 URL 占位符名 ≠ args 名的静默坑
+      // （applySpec 从 raw[scope] 取值，但 args 声明为 path，二者对不上 → path 永远 undefined）。
+      id: 'system.recents.remove',
+      cli: ['recents', 'remove'],
+      http: ['DELETE', '/api/recents'],
+      summary: '从最近目录列表中移除一个目录（body/--path，不存在也算成功）',
+      flags: { path: { type: 'string', required: true, hint: '要移除的目录路径' } },
+      run: (ctx) => removeRecent(ctx.path),
+      render: (r) => (r.status === 'not_found' ? `未找到: ${r.path}` : `已移除: ${r.scope}`),
     },
   ],
 };

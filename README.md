@@ -30,6 +30,7 @@ npx nx-rp routes              # 看 CLI ↔ Web 路由对照
 nx-rp serve                  启动 Web 面板（默认 :7820；端口上已有 nx-rp 面板则
                              登记当前目录到「最近目录」并直接打开它，不重复起进程）
 nx-rp recents                最近使用的工作目录（面板可一键切换数据范围）
+nx-rp recents remove <path>  从最近目录列表移除（不存在的路径也返回 not_found；面板右上角 hover 条目右侧的 × 同效）
 nx-rp skill install          装内置 skill 到 ~/.claude/skills（默认装 nx-rp）
 nx-rp skill install --group=rp-loop   按 group 装另一个内置 skill
                              （group 名即 skill 名，等价 `skill install rp-loop`；
@@ -74,6 +75,9 @@ nx-rp ann todos              跨文件的未完成待办清单
 - 每次在任何项目目录执行 `nx-rp serve`，该目录会被自动登记进「最近目录」——
   如果默认端口上已经有面板在跑，不会再起第二个进程，直接打开它
 - 面板右上角「最近目录」下拉可切换数据范围：切换后的查看/新增/编辑都落到那个目录
+- 下拉自动跟随最新触发：另一终端刚跑过 `nx-rp serve`、或在面板下拉底
+  部点"+ 添加目录"输入路径，都会被自动切到那个目录
+- 鼠标悬停条目右侧的 × 可移除该条目（等价 `nx-rp recents remove <path>`）
 - 想真正并行开两个面板：`nx-rp serve --port 7830` 显式指定端口
 
 ## 开发
