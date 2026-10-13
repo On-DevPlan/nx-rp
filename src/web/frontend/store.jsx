@@ -53,8 +53,10 @@ export function StoreProvider({ children }) {
 
   // 移除一个最近目录：DELETE + 若是当前激活则清掉 + 重拉 + 重挂载。
   // 与 switchScope 链路对称——同样以 scopeTick 收尾，保证视图在删除后立刻看到空数据。
+  // 这里**不吞异常**（与 switchScope 的乐观切换不同）：删失败必须让用户知道，
+  // 否则条目看起来还在（没删掉）而没有任何反馈。由调用方的 guard 负责 toast。
   const removeRecent = useCallback(async (entry) => {
-    await api('/api/recents', { method: 'DELETE', body: { path: entry.path } }).catch(() => {});
+    await api('/api/recents', { method: 'DELETE', body: { path: entry.path } });
     if (ui.activeScope?.scope === entry.scope) {
       setActiveScope(null);
       patchUi({ activeScope: null });

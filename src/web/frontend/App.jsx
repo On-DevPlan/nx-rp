@@ -30,15 +30,21 @@ function RecentsDropdown() {
   const toast = useToast();
   const { dialog, node: dialogNode } = useDialog();
 
-  // 点击外部收回。挂载位置是 document 而非 window：菜单是 fixed/absolute，
-  // 滚动不该触发它；document 监听到的 mousedown 已经覆盖页面所有可视元素。
+  // 点击外部 / 按 Esc 收回。用 mousedown 而非 click：click 阶段会先冒泡到触发按钮的
+  // onClick（setOpen(true)），把刚关掉的又打开；mousedown 早于 click 触发，天然避开。
+  // 挂 document 而非 window：菜单是 absolute，滚动不该触发它。
   useEffect(() => {
     if (!open) return undefined;
     const onDown = (e) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
     };
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
     document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
   }, [open]);
 
   const recents = boot?.recents || [];
@@ -106,8 +112,8 @@ function RecentsDropdown() {
                   className="recents-del"
                   title={`从最近目录中移除: ${r.path}`}
                   onClick={(e) => {
-                    e.stopPropagation(); // 不冒泡到 li 内的切换按钮
-                    removeRecent(r);
+                    e.stopPropagation(); // 不冒泡到 li 内的切换按钮（否则删完还顺手切了目录）
+                    guard(() => removeRecent(r));
                   }}
                 >×</button>
               </li>
