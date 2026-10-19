@@ -13,6 +13,10 @@
     "rp-archify": {
       "skills": ["rp-archify"],
       "summary": "archify 图表登记——项目与多图表关系维护，面板「图表」模式切换查看"
+    },
+    "rp-wish": {
+      "skills": ["rp-wish"],
+      "summary": "愿望驱动循环——调用 nx-loop 无关键词强制 X 轮，subagent 自动生成需求并按目录/注册维度迭代产出"
     }
   }
 }
