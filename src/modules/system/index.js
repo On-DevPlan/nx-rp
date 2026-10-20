@@ -2,15 +2,20 @@
 //
 // 分层例外：本模块是**刻意的聚合器**，允许 import 其他模块的 service
 // （eslint 对 src/modules/system/** 单独放行）。其余模块之间禁止互相依赖。
-import { statSync } from 'node:fs';
+import { statSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { storePathFromEnv, cwdScope, normalizeScope } from '../../core/paths.js';
+import { APP_NAME, storePathFromEnv, cwdScope, normalizeScope } from '../../core/paths.js';
 import { loadStore, mutateStore } from '../../core/store.js';
 import { invalidInput } from '../../core/errors.js';
 import { commandEntry } from '../../runtime/builtins.js';
 
 // recents 上限与 store.js 的 RECENTS_LIMIT 对齐（normalize 会再截一次，这里防抖）。
 const RECENTS_LIMIT = 20;
+
+// 包的版本号：app 段要带上它，别的 nx-xx 面板靠 app.name 认领同款。
+const VERSION = JSON.parse(
+  readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')
+).version;
 
 // 登记一个最近目录：upsert（同 scope 更新置顶，新条目插到最前）。
 // path 接受原始大小写，scope 键内部归一化——两条入口（面板 POST、serve 启动登记）
@@ -58,6 +63,9 @@ export { removeRecent };
 async function bootstrap() {
   const store = await loadStore();
   return {
+    // app 段是跨项目唯一的认领签名：别的 nx-xx 面板靠它认出「同款」，
+    // 从而复用端口上已经在跑的那个面板，而不是各起一个进程。
+    app: { name: APP_NAME, version: VERSION },
     version: '0.1.0',
     appStorePath: storePathFromEnv(),
     cwdScope: cwdScope(),

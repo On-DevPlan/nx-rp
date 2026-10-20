@@ -48,7 +48,8 @@ note（思考），支持行号锚点；`ann load` 加载文件预览（默认 1
 
 每个资源的可见性都按 cwd 自动隔离：同一 cwd 看到一致数据，切换目录是不同 scope。
 多项目场景：`nx-rp recents` 列最近目录；面板右上角可一键切换数据范围；
-默认端口上已有面板时再跑 `nx-rp serve` 不会起第二进程，登记当前目录并直接打开。
+默认端口上已有 nx-rp 面板时再跑 `nx-rp serve` 不会起第二进程，登记当前目录并直接打开；
+端口被别的服务占用时自动顺延到下一个空闲端口。`NX_SERVE_NO_OPEN=1` 可全局关掉自动开浏览器。
 `nx-rp recents remove <path>` 可移除（面板右上角鼠标悬停条目右侧的 × 也能移除）。
 首次在某路径下用 nx-rp：直接在面板下拉底部的"+ 添加目录"输入路径即可，无需切终端。
 
@@ -59,7 +60,7 @@ CLI 可以有 `validate` 这类纯检查命令，Web 没有按钮。
 
 ```
 nx-rp serve                          # 启 :7820 面板（--no-open 不弹浏览器；
-                                     #   端口已有 nx-rp 面板则复用它）
+                                     #   端口已有 nx-rp 面板则复用它，否则顺延端口）
 nx-rp recents                        # 最近工作目录（面板快速切换 scope 的数据源）
 nx-rp chart                           # 扫 src/ 的 import 关系 → 依赖图（DOT 文本）
 nx-rp chart --json                    # {dot, nodes, edges, stats} 结构化输出

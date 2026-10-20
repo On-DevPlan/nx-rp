@@ -1,6 +1,6 @@
 {
   "name": "nx-rp",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "nx-rp（npx-repo）—— 项目外部上下文信息管理：deps / hook / 批注 等域，CLI + Web 面板同源，按 cwd 自动隔离 scope",
   "type": "module",
   "bin": {

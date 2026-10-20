@@ -4,7 +4,8 @@
 // 所以 help 与 routes 不会漏掉它们，也不会出现两张长度不同的「命令表」。
 import { startServer } from './server.js';
 import { openBrowser } from '../core/open.js';
-import { storePathFromEnv, cwdScope } from '../core/paths.js';
+import { APP_NAME, storePathFromEnv, cwdScope } from '../core/paths.js';
+import { autoOpenEnabled, resolvePortConflict, describeOccupant } from '../core/serve-port.js';
 import { invalidInput as _invalidInput } from '../core/errors.js';
 import { existsSync, statSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -59,45 +60,49 @@ export function parseServeArgs(rest) {
   return out;
 }
 
-// 端口上是不是已经在跑一个 nx-rp 面板？/api/health 的 cwdScope 字段就是签名
-// （system/index.js 的 health 一定返回它），外来进程要么 404 要么没有这个字段。
-async function probeNxRp(port) {
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(1500) });
-    if (!res.ok) return false;
-    const body = await res.json();
-    return !!(body && body.ok && body.data && body.data.cwdScope);
-  } catch {
-    return false;
-  }
-}
-
+// 端口协商与「要不要开浏览器」的统一口径在 core/serve-port.js：
+// 所有 nx-xx 面板共用同一份，靠 /api/bootstrap 的 app.name 认领彼此，
+// 靠 NX_SERVE_NO_OPEN 统一关闭自动开浏览器。这里不再自带探测实现。
 async function cmdServe(rest) {
   const { port: portArg, open } = parseServeArgs(rest);
-  const port = portArg || Number(process.env.NX_RP_PORT) || 7820;
+  const desiredPort = portArg || Number(process.env.NX_RP_PORT) || 7820;
+  const host = '127.0.0.1';
+  // --no-open 与 NX_SERVE_NO_OPEN 是「或」关系：任一为真就不开浏览器。
+  const canOpen = autoOpenEnabled(!open);
 
   // 触发装载期自检
   await import('./registry.js');
   // 这里 import api.js 会触发路由表装载
   await import('./api.js');
 
+  // EADDRINUSE 不是无脑报错：先看看端口上是不是自己的面板。
+  // 是 → 登记当前目录到 recents + 打开浏览器就完事，一个面板管所有项目；
+  // 不是 → 顺延到下一个空闲端口，起自己的面板。
   let server;
+  let port = desiredPort;
   try {
     server = await startServer({ port });
   } catch (err) {
-    // EADDRINUSE 不是无脑报错：先看看端口上是不是自己的面板。
-    // 是 → 登记当前目录到 recents + 打开浏览器就完事，一个面板管所有项目；
-    // 不是 → 才是真正的端口冲突，让用户换端口。
-    if (err && err.code === 'EADDRINUSE' && await probeNxRp(port)) {
+    if (!err || err.code !== 'EADDRINUSE') throw err;
+
+    const decision = await resolvePortConflict(desiredPort, APP_NAME, host);
+
+    if (decision.action === 'reuse') {
       const { touchRecent } = await import('../modules/system/index.js');
       const entry = await touchRecent(process.cwd()).catch(() => null);
-      const url = `http://127.0.0.1:${port}`;
+      const url = `http://${host}:${desiredPort}`;
       console.log(`面板已在运行: ${url}`);
       console.log(`已登记当前目录: ${entry ? entry.path : process.cwd()}`);
-      if (open) openBrowser(url);
-      return { status: 'reused', port, url };
+      if (canOpen) openBrowser(url);
+      return { status: 'reused', port: desiredPort, url };
     }
-    throw err;
+
+    // 别人占的：顺延到下一个空闲端口，再起自己的面板。
+    console.log(
+      `端口 ${desiredPort} 已被占用（占用者: ${describeOccupant(decision.occupant)}），改用 ${decision.port}`
+    );
+    port = decision.port;
+    server = await startServer({ port });
   }
 
   // 启动成功：把自己登记进 recents（面板的「最近目录」列表）。
@@ -111,13 +116,13 @@ async function cmdServe(rest) {
     }
   })();
 
-  const url = `http://127.0.0.1:${port}`;
+  const url = `http://${host}:${port}`;
   console.log(`面板:   ${url}`);
   console.log(`scope:  ${cwdScope()}`);
   console.log(`存储:   ${storePathFromEnv()}`);
   console.log(`加 --json 到所有命令得机器可读输出。Ctrl+C 退出。`);
 
-  if (open) openBrowser(url);
+  if (canOpen) openBrowser(url);
 
   return new Promise((resolve) => {
     process.on('SIGINT', () => {
@@ -578,7 +583,7 @@ export const BUILTINS = [
   {
     id: 'serve',
     cli: ['serve'],
-    summary: '启动 Web 面板（默认 :7820；--port N 改端口；--no-open 不开浏览器；端口上已有 nx-rp 面板则登记当前目录并直接打开它）',
+    summary: '启动 Web 面板（默认 :7820；--port N 改端口；--no-open 不开浏览器；端口上已有 nx-rp 面板则登记当前目录并直接打开它，否则顺延到下一个空闲端口；NX_SERVE_NO_OPEN=1 全局不开浏览器）',
     run: cmdServe,
     render: () => '',
   },

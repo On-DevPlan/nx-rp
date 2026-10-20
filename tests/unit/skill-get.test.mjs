@@ -345,7 +345,7 @@ test('list：列出所有 skill + 默认 install + groups；默认 install 自�
   assert.ok(Array.isArray(r.skills) && r.skills.includes('nx-rp') && r.skills.includes('rp-loop'),
     'assets/ 下的 skill 都应列出：' + JSON.stringify(r.skills));
   assert.equal(r.defaultGroup, 'nx-rp', '默认 install = package.json.name');
-  assert.deepEqual(r.groups, ['nx-rp', 'rp-archify', 'rp-loop']);
+  assert.deepEqual(r.groups, ['nx-rp', 'rp-archify', 'rp-loop', 'rp-wish']);
   assert.equal(r.source, 'manifest', '当前 groups.json 存在 → 走 manifest 而非降级');
   // render：默认 install 一项有"（默认 install）"标记，其它没有
   const out = skill.render(r);
