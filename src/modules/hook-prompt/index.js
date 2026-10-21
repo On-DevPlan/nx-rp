@@ -76,22 +76,29 @@ export default {
       id: 'hook-prompt.log',
       cli: ['hook', 'log'],
       http: ['GET', '/api/hook-prompt/log'],
-      summary: '查提示词记录（默认当前目录，--all 跨全部目录，--cwd 精确选一条目录，--groups 仅看分组）',
+      summary: '查提示词记录（默认当前目录，--all 跨全部目录，--cwd 精确选一条目录，--groups 仅看分组，--system 含系统注入）',
       // 读命令的 flag 一律不带 default——「不传」本身是有意义的输入（默认当前 cwd）
       flags: {
         all: { type: 'boolean', hint: '跨全部目录（与 --cwd 互斥，同时给则 --cwd 生效）' },
         limit: { type: 'number', hint: '条数（默认 50）' },
         cwd: { type: 'string', hint: '精确选一条目录（接受任意形态，内部按归一化路径匹配）' },
         groups: { type: 'boolean', hint: '仅显示 cwd 分组聚合，不列记录' },
+        system: { type: 'boolean', hint: '连系统注入的记录一起显示（<task-notification> 等，默认不显示）' },
       },
       run: (ctx) => service.listPrompts({
         all: !!ctx.all,
         limit: normalizeLimit(ctx.limit),
         cwd: ctx.cwd || null,
-        shape: ctx.groups ? 'with-groups' : 'records',
+        // 统一返回 with-groups 形状：CLI 与面板同源，面板本来就在用这个形状。
+        // 附带 systemCount（范围内系统注入总条数）与 filtered（本次被剔除的条数），
+        // 面板据此显示「已隐藏 N 条」并给出清理入口。
+        shape: 'with-groups',
+        includeSystem: !!ctx.system,
       }),
       render: (result, ctx) => {
-        // shape=with-groups：{records, groups}
+        const list = Array.isArray(result) ? result : (result.records || []);
+        const systemCount = Array.isArray(result) ? 0 : (result.systemCount || 0);
+        // shape=with-groups：{records, groups, systemCount, filtered}
         if (ctx.groups) {
           const groups = Array.isArray(result) ? [] : (result.groups || []);
           if (!groups.length) return '（无 cwd 分组数据）';
@@ -99,15 +106,45 @@ export default {
           return groups.map((g) => `  ${g.display}  —  ${g.count} 条  (最近 ${(g.latestTs || '').replace('T', ' ').slice(0, 19)})`).join('\n');
         }
         // 默认形态：records 数组
-        const list = Array.isArray(result) ? result : (result.records || []);
-        if (!list.length) return '（暂无记录——在启用 hook 的会话里发一条提示词后再来）';
+        if (!list.length) {
+          return systemCount
+            ? `（该范围没有真实提示词——只有 ${systemCount} 条系统注入记录；--system 可看，hook clean 可清理）`
+            : '（暂无记录——在启用 hook 的会话里发一条提示词后再来）';
+        }
         // sessionId 独立成行给完整恢复命令——不和提示词混在一行，整行可直接复制执行
-        return list
+        const body = list
           .map((r) => {
             const base = `[${(r.ts || '').replace('T', ' ').slice(0, 19)}] ${String(r.prompt).replace(/\s+/g, ' ').slice(0, 120)}`;
             return r.sessionId ? `${base}\n    ↳ claude --resume ${r.sessionId}` : base;
           })
           .join('\n');
+        const note = systemCount
+          ? `\n（范围内另有 ${systemCount} 条系统注入记录：--system 一并显示，hook clean 物理清理）`
+          : '';
+        return body + note;
+      },
+    },
+    {
+      id: 'hook-prompt.clean',
+      cli: ['hook', 'clean'],
+      http: ['POST', '/api/hook-prompt/clean'],
+      summary: '从提示词日志里物理剔除系统注入的记录（<task-notification> 等；写前留快照）',
+      flags: {
+        all: { type: 'boolean', hint: '清理全部目录（默认只清理当前目录）' },
+        cwd: { type: 'string', hint: '精确选一条目录清理（接受任意形态，内部按归一化路径匹配）' },
+        dryRun: { type: 'boolean', hint: '只统计要删多少条，不写盘' },
+      },
+      run: (ctx) => service.cleanSystemRecords({
+        all: !!ctx.all,
+        cwd: ctx.cwd || null,
+        dryRun: !!ctx.dryRun,
+      }),
+      render: (r) => {
+        const scope = r.files ? `${r.files} 个文件` : '0 个文件';
+        if (r.dryRun) return `[dry-run] 将从 ${scope} 里剔除 ${r.removed} 条系统注入记录（未写盘）`;
+        if (!r.removed) return '没有可清理的系统注入记录';
+        const snaps = (r.snapshots || []).join('\n  ');
+        return `已清理 ${r.removed} 条系统注入记录（${scope}）\n快照: ${snaps || '（无）'}`;
       },
     },
   ],

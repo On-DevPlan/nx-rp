@@ -7,8 +7,8 @@
 // 日志文件按 cwd 哈希分文件（promptsFileFor），log --all 跨目录查询。
 import fsp from 'node:fs/promises';
 import { join } from 'node:path';
-import { CLAUDE_SETTINGS_PATH, PROMPTS_DIR, promptsFileFor, cwdScope, normalizeScope } from '../../core/paths.js';
-import { appendOwnGroup, removeOwnGroups, toggleSettings, findOwnGroups, ownsGroup, readSettings } from '../../core/claude-settings.js';
+import { CLAUDE_SETTINGS_PATH, PROMPTS_DIR, SNAPSHOTS_DIR, promptsFileFor, cwdScope, normalizeScope } from '../../core/paths.js';
+import { appendOwnGroup, removeOwnGroups, toggleSettings, findOwnGroups, ownsGroup, readSettings, snapshotFile } from '../../core/claude-settings.js';
 import { readStdin, parseHookEvent } from '../../core/hook-io.js';
 
 // 我们那条 hook entry 的指纹——on/off 靠 marker 在 hooks 数组里认亲。
@@ -46,6 +46,34 @@ export function manualSnippet() {
       ],
     },
   };
+}
+
+// ─── 系统注入的提示词（机器塞进 UserPromptSubmit 的消息）─────────────
+//
+// Claude Code 除了用户真手打的字，还会把机器消息当提示词送进同一个 hook：
+// `<task-notification>`（后台任务完成）、`<cross-session-message>`（别的会话）、
+// `<agent-message>`（subagent 回报）等。它们不是用户意图，混在记录里会：
+//   - 面板列表被灌水（实测 1156 条里 253 条是 task-notification，占 22%）
+//   - agent 拿日志做分析时被带偏（得先手工剥一层才能统计真实提示词）
+//
+// **按标记白名单判定，不按「以 < 开头」判定**：用户真的会贴 `<svg>…</svg>`、
+// `<pre>` 之类的代码片段——那是正经提示词，不能误杀。
+const SYSTEM_INJECTED_MARKERS = new Set([
+  'task-notification',
+  'cross-session-message',
+  'agent-message',
+  'system-reminder',
+  'command-message',
+  'command-name',
+  'local-command-stdout',
+  'user-prompt-submit-hook',
+]);
+
+export function isSystemInjected(prompt) {
+  const s = String(prompt ?? '').trimStart();
+  if (!s.startsWith('<')) return false;
+  const m = /^<([a-zA-Z][\w-]*)/.exec(s);
+  return !!m && SYSTEM_INJECTED_MARKERS.has(m[1].toLowerCase());
 }
 
 // ─── on / off / status ─────────────────────────────────────────────
@@ -134,18 +162,23 @@ export async function captureRecord({ prompt, cwd, sessionId }) {
 // 查询：默认当前 cwd（按归一化 key 匹配）；--all 跨全部目录。倒序（最新在前）。
 //
 // 默认返回**记录数组**（兼容历史接口）；`{ shape: 'with-groups' }` 时返回
-// `{ records, groups }`，面板/CLI 按需取分组聚合。
+// `{ records, groups, systemCount, filtered }`，面板/CLI 按需取分组聚合。
 //
 // **cwd 一律走归一化 key**（`normalizeScope`）。曾经这里拿记录里的原始 `cwd`
 // 字符串分组、又用子串筛选，后果是同一个目录派生出两条组（`D:\x` 与 `D:/x`），
 // 选中其中一条时另一条形态的记录一条都匹配不上 → 面板切组后**空白**。
 // 存储侧 `promptsFileFor` 本来就是按归一化 key 分文件的（见 paths.js 的 hashOf），
 // 所以这里对齐它即可，不需要迁移历史数据。
-export async function listPrompts({ all = false, limit = 50, cwd = null, shape = 'records' } = {}) {
+//
+// `includeSystem=false`（默认）时**系统注入的记录不进列表**——它们不是用户意图。
+// 过滤发生在 limit 之前：否则 limit 条里被滤掉一半，列表永远填不满。
+// `systemCount` 仍报出范围内系统注入的**总条数**（面板据此显示「已隐藏 N 条」
+// 并提供清理入口），`filtered` 是本次实际被剔除的条数。
+export async function listPrompts({ all = false, limit = 50, cwd = null, shape = 'records', includeSystem = false } = {}) {
   // 精确匹配一条目录；`scope: true` 表示「跟随当前 cwd」。两种形态统一收到 `target`。
   const target = cwd ? normalizeScope(cwd) : (all ? null : cwdScope());
-  const { records, groups } = await collectAll({ limit, target });
-  if (shape === 'with-groups') return { records, groups };
+  const { records, groups, systemCount, filtered } = await collectAll({ limit, target, includeSystem });
+  if (shape === 'with-groups') return { records, groups, systemCount, filtered };
   return records;
 }
 
@@ -154,12 +187,12 @@ function scopeKeyOf(r) {
   return typeof r.cwd === 'string' && r.cwd ? normalizeScope(r.cwd) : null;
 }
 
-async function collectAll({ limit, target }) {
+async function collectAll({ limit, target, includeSystem }) {
   let files;
   try {
     files = (await fsp.readdir(PROMPTS_DIR)).filter((f) => f.endsWith('.jsonl'));
   } catch {
-    return { records: [], groups: [] };
+    return { records: [], groups: [], systemCount: 0, filtered: 0 };
   }
 
   // 组列表**永远全局**：它是面板上的「目录切换器」——一旦它跟着 target 收窄，
@@ -174,15 +207,25 @@ async function collectAll({ limit, target }) {
 
   const groupMap = new Map();
   const tails = [];
+  let systemCount = 0;
   for (const name of files) {
     const full = join(PROMPTS_DIR, name);
     const recs = await readRecords(full);
     if (!recs.length) continue;
 
+    // 拆成「真实提示词」与「系统注入」两堆。系统注入**默认剔除**——
+    // 分组 count 也只算真实提示词，否则下拉里写着 200 条、列表却只有 150 条。
+    const real = [];
+    let noise = 0;
+    for (const r of recs) {
+      if (isSystemInjected(r.prompt)) noise++;
+      else real.push(r);
+    }
+
     // 分组聚合：按归一化 key 归并（不被 limit 截），display 取该目录最新一条记录的
     // 原始形态，保留用户自己的大小写与分隔符。曾经按原始 cwd 字符串分组 → 同一目录
     // 派生出两条组（`D:\x` 与 `D:/x`），选中其一另一条形态的记录就一条都匹配不上。
-    for (const r of recs) {
+    for (const r of real) {
       const key = scopeKeyOf(r);
       if (!key) continue;
       const g = groupMap.get(key) || { key, display: r.cwd, count: 0, latestTs: '' };
@@ -196,7 +239,8 @@ async function collectAll({ limit, target }) {
     // 历史版本曾用「首行 cwd 子串」早停：形态一变就误杀，还把兄弟目录
     // （proj-alpha 匹配上 proj-alpha-2）一并捞了进来。
     if (exact && full !== exact) continue;
-    const tail = recs.slice(-TAIL_PER_FILE);
+    systemCount += noise;
+    const tail = (includeSystem ? recs : real).slice(-TAIL_PER_FILE);
     tail.reverse(); // ts 单调 → 倒序即最新在前，归并取头
     tails.push(tail);
   }
@@ -217,7 +261,7 @@ async function collectAll({ limit, target }) {
   }
 
   const groups = Array.from(groupMap.values()).sort((a, b) => (a.latestTs < b.latestTs ? 1 : a.latestTs > b.latestTs ? -1 : 0));
-  return { records, groups };
+  return { records, groups, systemCount, filtered: includeSystem ? 0 : systemCount };
 }
 
 // 读一个文件并 parse 出全部记录（坏行跳过）。文件不存在 = 该目录还没记录，返回空数组。
@@ -234,4 +278,66 @@ async function readRecords(file) {
     try { out.push(JSON.parse(line)); } catch { /* 坏行跳过 */ }
   }
   return out;
+}
+
+// ─── 清理：把系统注入的记录从 JSONL 里物理剔除 ──────────────────────
+//
+// 展示层已经默认不显示它们，但行还在文件里——日志继续膨胀、也干扰手工排查。
+// 这里提供**物理清理**：写前留快照（可回滚），只删系统注入的行；其余行
+// （真实提示词、连解析都失败的坏行）一律原样保留。
+//
+// 范围：all=true → 全部目录文件；否则只处理 cwd 指向的那一个（默认当前 scope）。
+// 坏行**不删**：解析不出来就不知道它是什么，不许替用户做决定。
+export async function cleanSystemRecords({ all = false, cwd = null, dryRun = false } = {}) {
+  const target = cwd ? normalizeScope(cwd) : (all ? null : cwdScope());
+  const empty = { removed: 0, files: 0, scanned: 0, snapshots: [], dryRun: !!dryRun };
+  let names;
+  try {
+    names = (await fsp.readdir(PROMPTS_DIR)).filter((f) => f.endsWith('.jsonl'));
+  } catch {
+    return empty;
+  }
+  const exact = target ? promptsFileFor(target).file : null;
+
+  const changed = [];
+  let removed = 0;
+  let scanned = 0;
+  for (const name of names) {
+    const full = join(PROMPTS_DIR, name);
+    if (exact && full !== exact) continue;
+    let raw;
+    try { raw = await fsp.readFile(full, 'utf8'); } catch { continue; }
+    const lines = raw.split('\n');
+    const keep = [];
+    let drop = 0;
+    for (const line of lines) {
+      if (!line.trim()) { keep.push(line); continue; } // 空行原样留着
+      let rec = null;
+      try { rec = JSON.parse(line); } catch { rec = null; }
+      if (rec && isSystemInjected(rec.prompt)) { drop++; continue; }
+      keep.push(line); // 坏行也留——不知道是什么就不许删
+    }
+    scanned += lines.filter((l) => l.trim()).length;
+    removed += drop;
+    if (drop > 0) changed.push({ file: full, content: keep.join('\n') });
+  }
+
+  if (!changed.length) return { ...empty, removed: 0, files: 0, scanned };
+  if (dryRun) {
+    return { removed, files: changed.length, scanned, snapshots: [], dryRun: true };
+  }
+
+  // 写前留快照：落在 ~/.nx-rp/snapshots/（集中目录，不污染任何项目仓库）。
+  const snapshots = [];
+  for (const c of changed) {
+    const snap = await snapshotFile(c.file, SNAPSHOTS_DIR);
+    if (snap) snapshots.push(snap);
+  }
+  // 原子替换：先写 tmp 再 rename——中途中断不会留下半截日志文件。
+  for (const c of changed) {
+    const tmp = `${c.file}.${process.pid}.tmp`;
+    await fsp.writeFile(tmp, c.content, 'utf8');
+    await fsp.rename(tmp, c.file);
+  }
+  return { removed, files: changed.length, scanned, snapshots, dryRun: false };
 }

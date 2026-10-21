@@ -2,7 +2,7 @@
 // 路径重定向到临时目录（paths.setHookPaths），绝不碰真实的 ~/.claude/settings.json。
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, rm, appendFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +13,7 @@ const ROOT = join(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:
 let tmp;
 let settingsPath;
 let promptsDir;
+let snapshotsDir;
 
 const pathsMod = await import(pathToFileURL(join(ROOT, 'src', 'core', 'paths.js')).href);
 const serviceUrl = () => pathToFileURL(join(ROOT, 'src', 'modules', 'hook-prompt', 'service.js')).href;
@@ -26,7 +27,9 @@ beforeEach(async () => {
   tmp = await mkdtemp(join(tmpdir(), 'nxrp-hookp-'));
   settingsPath = join(tmp, 'claude', 'settings.json');
   promptsDir = join(tmp, 'prompts');
-  pathsMod.setHookPaths({ settingsPath, promptsDir, skillsDir: join(tmp, 'skills') });
+  // 清理动作的快照也要重定向——否则测试会往真实的 ~/.nx-rp/snapshots/ 里写
+  snapshotsDir = join(tmp, 'snapshots');
+  pathsMod.setHookPaths({ settingsPath, promptsDir, skillsDir: join(tmp, 'skills'), snapshotsDir });
   // service.js 没有在顶层解构常量（都在函数内现取 live binding），重定向即时生效
 });
 
@@ -35,6 +38,7 @@ afterEach(async () => {
     settingsPath: join(process.env.USERPROFILE || process.env.HOME, '.claude', 'settings.json'),
     promptsDir: join(pathsMod.APP_DIR, 'prompts'),
     skillsDir: join(pathsMod.APP_DIR, 'skills'),
+    snapshotsDir: join(pathsMod.APP_DIR, 'snapshots'),
   });
   await rm(tmp, { recursive: true, force: true });
 });
@@ -193,12 +197,13 @@ test('listPrompts 的 limit 在 action 层归一化：负数/NaN 回落 50，超
   // 走 action 层（归一化所在位置），模拟 CLI 传了 --limit=-5
   const { ACTIONS } = await import(pathToFileURL(join(ROOT, 'src', 'runtime', 'registry.js')).href);
   const logAction = ACTIONS.find((a) => a.id === 'hook-prompt.log');
+  // action 统一返回 with-groups 形状（CLI 与面板同源）
   const res = await logAction.run({ all: true, limit: -5 });
-  assert.equal(res.length, 2, '负 limit 回落默认 50，不得丢记录');
+  assert.equal(res.records.length, 2, '负 limit 回落默认 50，不得丢记录');
   const big = await logAction.run({ all: true, limit: 99999 });
-  assert.equal(big.length, 2, '超大 limit 封顶 1000，不得丢记录');
+  assert.equal(big.records.length, 2, '超大 limit 封顶 1000，不得丢记录');
   const nan = await logAction.run({ all: true, limit: NaN });
-  assert.equal(nan.length, 2, 'NaN 回落默认 50');
+  assert.equal(nan.records.length, 2, 'NaN 回落默认 50');
 });
 
 test('listPrompts：分组按**归一化路径**聚合，同一目录只出一条组', async () => {
@@ -365,4 +370,174 @@ test('listPrompts cwdFilter：归一化后精确选一条目录 + groups 聚合'
   assert.ok(groups.length >= 2, 'groups 是全量聚合');
   // groups 倒序按最新 ts；首项应该是三条里最新的那条
   assert.ok(groups[0].latestTs >= (groups[1]?.latestTs || ''));
+});
+
+// ─── 系统注入的记录：默认不显示，可切换显示，可物理清理 ──────────────
+
+test('isSystemInjected：认机器消息，但**不误杀**以 < 开头的真实代码', async () => {
+  const mod = await import(serviceUrl());
+  // 机器消息：后台任务完成 / 跨会话消息 / subagent 回报
+  assert.equal(mod.isSystemInjected('<task-notification> <task-id>x</task-id>'), true);
+  assert.equal(mod.isSystemInjected('<cross-session-message from="a"></cross-session-message>'), true);
+  assert.equal(mod.isSystemInjected('<agent-message from="b">done</agent-message>'), true);
+  // 真实提示词：用户贴的代码片段（曾经出现过 <svg> 开头的 SVG 源码）
+  assert.equal(mod.isSystemInjected('<svg viewBox="0 0 24 24"><path d="M0 0"/></svg>'), false);
+  assert.equal(mod.isSystemInjected('<pre>hello</pre>'), false);
+  assert.equal(mod.isSystemInjected('帮我把这个 <div> 改一下'), false);
+  assert.equal(mod.isSystemInjected(''), false);
+  assert.equal(mod.isSystemInjected(null), false);
+});
+
+test('listPrompts：系统注入默认不进列表；includeSystem 才带上', async () => {
+  const mod = await import(serviceUrl());
+  const dir = join(tmp, 'noise');
+  await mod.captureRecord({ prompt: '真实提示词一', cwd: dir });
+  await mod.captureRecord({ prompt: '<task-notification> <task-id>abc</task-id> 后台任务完成', cwd: dir });
+  await mod.captureRecord({ prompt: '真实提示词二', cwd: dir });
+
+  const def = await mod.listPrompts({ all: true, limit: 50, cwd: dir });
+  assert.equal(def.length, 2, '默认只列真实提示词');
+  assert.ok(def.every((r) => !String(r.prompt).startsWith('<task-notification>')));
+
+  const withNoise = await mod.listPrompts({ all: true, limit: 50, cwd: dir, includeSystem: true });
+  assert.equal(withNoise.length, 3, 'includeSystem=true 时系统注入也列出');
+});
+
+test('listPrompts：过滤发生在 limit 之前（否则列表永远填不满）', async () => {
+  const mod = await import(serviceUrl());
+  const dir = join(tmp, 'fill');
+  // 5 条噪声 + 3 条真实 = 8 条；limit=3 必须拿到 3 条**真实**的
+  for (let i = 0; i < 5; i++) {
+    await mod.captureRecord({ prompt: `<task-notification> n${i}`, cwd: dir });
+  }
+  for (let i = 0; i < 3; i++) {
+    await mod.captureRecord({ prompt: `real-${i}`, cwd: dir });
+  }
+  const res = await mod.listPrompts({ all: true, limit: 3, cwd: dir });
+  assert.equal(res.length, 3, 'limit=3 要给满 3 条');
+  assert.ok(res.every((r) => r.prompt.startsWith('real-')), '拿到的必须全是真实提示词');
+});
+
+test('listPrompts with-groups：带 systemCount/filtered；分组条数只算真实提示词', async () => {
+  const mod = await import(serviceUrl());
+  const dir = join(tmp, 'counts');
+  await mod.captureRecord({ prompt: 'r1', cwd: dir });
+  await mod.captureRecord({ prompt: '<task-notification> x', cwd: dir });
+  await mod.captureRecord({ prompt: '<cross-session-message>y</cross-session-message>', cwd: dir });
+
+  const res = await mod.listPrompts({ all: true, limit: 50, cwd: dir, shape: 'with-groups' });
+  assert.equal(res.records.length, 1, '列表只有 1 条真实提示词');
+  assert.equal(res.systemCount, 2, 'systemCount 报出范围内系统注入的总条数');
+  assert.equal(res.filtered, 2, '默认形态下 filtered = systemCount');
+  const key = pathsMod.normalizeScope(dir);
+  const g = res.groups.find((x) => x.key === key);
+  assert.equal(g.count, 1, '分组条数只算真实提示词（否则下拉写 3 条、列表只有 1 条）');
+
+  const shown = await mod.listPrompts({ all: true, limit: 50, cwd: dir, shape: 'with-groups', includeSystem: true });
+  assert.equal(shown.filtered, 0, 'includeSystem 时没有记录被剔除');
+  assert.equal(shown.systemCount, 2, 'systemCount 不变（与是否显示无关）');
+});
+
+test('cleanSystemRecords：只删系统注入的行，真实提示词与坏行原样保留', async () => {
+  const mod = await import(serviceUrl());
+  const dir = join(tmp, 'clean');
+  await mod.captureRecord({ prompt: '真提示词一', cwd: dir });
+  await mod.captureRecord({ prompt: '<task-notification> 机器消息', cwd: dir });
+  await mod.captureRecord({ prompt: '<svg viewBox="0 0 24 24"/>', cwd: dir });
+  const file = pathsMod.promptsFileFor(dir).file;
+  // 手工塞一条坏行（解析不出来）——清理**不许**删它
+  await appendFile(file, '{ 这不是合法 JSON\n', 'utf8');
+
+  const before = await readFile(file, 'utf8');
+  const r = await mod.cleanSystemRecords({ cwd: dir });
+  assert.equal(r.removed, 1, '只删掉 1 条系统注入');
+  assert.equal(r.files, 1);
+  assert.ok(r.snapshots.length === 1, '写前必须留快照');
+
+  const after = await readFile(file, 'utf8');
+  assert.ok(after.includes('真提示词一'), '真实提示词必须留着');
+  assert.ok(after.includes('<svg viewBox'), '以 < 开头的真实代码必须留着');
+  assert.ok(after.includes('{ 这不是合法 JSON'), '坏行必须留着——不知道是什么就不许删');
+  assert.ok(!after.includes('机器消息'), '系统注入的行必须被删掉');
+  assert.ok(after.length < before.length, '文件应变小');
+
+  // 快照可回滚：快照内容 = 清理前的原文
+  const snap = await readFile(r.snapshots[0], 'utf8');
+  assert.equal(snap, before, '快照必须是清理前的原文');
+});
+
+test('cleanSystemRecords：dry-run 不写盘；无噪声时不动文件', async () => {
+  const mod = await import(serviceUrl());
+  const dir = join(tmp, 'dry');
+  await mod.captureRecord({ prompt: '只有真实提示词', cwd: dir });
+  const file = pathsMod.promptsFileFor(dir).file;
+  const before = await readFile(file, 'utf8');
+
+  const dry = await mod.cleanSystemRecords({ cwd: dir, dryRun: true });
+  assert.equal(dry.removed, 0);
+  assert.equal(dry.dryRun, true);
+  assert.equal(await readFile(file, 'utf8'), before, 'dry-run 不得写盘');
+
+  const noop = await mod.cleanSystemRecords({ cwd: dir });
+  assert.equal(noop.removed, 0, '没有噪声时不该报删了东西');
+  assert.equal(await readFile(file, 'utf8'), before, '没有噪声时文件不该被改写');
+});
+
+test('cleanSystemRecords：--all 跨目录清理，且不越界动别的目录', async () => {
+  const mod = await import(serviceUrl());
+  const dirA = join(tmp, 'all-a');
+  const dirB = join(tmp, 'all-b');
+  await mod.captureRecord({ prompt: '<task-notification> a', cwd: dirA });
+  await mod.captureRecord({ prompt: '<task-notification> b', cwd: dirB });
+  await mod.captureRecord({ prompt: '真实', cwd: dirB });
+
+  const r = await mod.cleanSystemRecords({ all: true });
+  assert.equal(r.removed, 2, '两个目录各一条噪声都要清掉');
+  assert.equal(r.files, 2);
+
+  const leftB = await readFile(pathsMod.promptsFileFor(dirB).file, 'utf8');
+  assert.ok(leftB.includes('真实'), '真实提示词留着');
+  assert.ok(!leftB.includes('task-notification'), '噪声清掉了');
+});
+
+test('hook-prompt.clean action：有 CLI + HTTP 路由，dry-run 不写盘', async () => {
+  const { ACTIONS } = await import(pathToFileURL(join(ROOT, 'src', 'runtime', 'registry.js')).href);
+  const act = ACTIONS.find((a) => a.id === 'hook-prompt.clean');
+  assert.ok(act, '必须有 hook-prompt.clean action');
+  assert.deepEqual(act.cli, ['hook', 'clean']);
+  assert.ok(Array.isArray(act.http) && act.http[0] === 'POST' && act.http[1] === '/api/hook-prompt/clean',
+    'clean 必须有 POST 路由，面板才能调');
+  assert.ok(act.flags.all && act.flags.cwd && act.flags.dryRun, 'clean 的 flag 要声明齐（applySpec 只透传声明过的参数）');
+
+  const mod = await import(serviceUrl());
+  const dir = join(tmp, 'act-clean');
+  await mod.captureRecord({ prompt: '<task-notification> x', cwd: dir });
+  const file = pathsMod.promptsFileFor(dir).file;
+  const before = await readFile(file, 'utf8');
+
+  const dry = await act.run({ cwd: dir, dryRun: true });
+  assert.equal(dry.removed, 1);
+  assert.equal(await readFile(file, 'utf8'), before, 'dry-run 不得写盘');
+
+  const real = await act.run({ cwd: dir });
+  assert.equal(real.removed, 1);
+  assert.ok(!(await readFile(file, 'utf8')).includes('task-notification'));
+});
+
+test('hook-prompt.log action：--system 才带系统注入；默认形态带 systemCount', async () => {
+  const { ACTIONS } = await import(pathToFileURL(join(ROOT, 'src', 'runtime', 'registry.js')).href);
+  const act = ACTIONS.find((a) => a.id === 'hook-prompt.log');
+  assert.ok(act.flags.system, 'log action 必须声明 system flag');
+
+  const mod = await import(serviceUrl());
+  const dir = join(tmp, 'act-log');
+  await mod.captureRecord({ prompt: '真实', cwd: dir });
+  await mod.captureRecord({ prompt: '<task-notification> x', cwd: dir });
+
+  const def = await act.run({ cwd: dir, limit: 50 });
+  assert.equal(def.records.length, 1);
+  assert.equal(def.systemCount, 1, '默认形态也要报出 systemCount（面板据此显示「已隐藏 N 条」）');
+
+  const withSys = await act.run({ cwd: dir, limit: 50, system: true });
+  assert.equal(withSys.records.length, 2);
 });

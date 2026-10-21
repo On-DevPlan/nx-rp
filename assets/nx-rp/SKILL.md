@@ -24,7 +24,9 @@ description: nx-rp（npx-repo）—— 给当前项目管理外部上下文信�
 另有 **两个 hook 模块**（与 chart 平级，各自独立 tab 与开关）：
 
 - **`hook-prompt` 提示词日志**：UserPromptSubmit，把每个会话里用户提交的提示词按目录记进
-  `~/.nx-rp/prompts/<cwd哈希>.jsonl`（`hook on` / `hook off` / `hook log`）
+  `~/.nx-rp/prompts/<cwd哈希>.jsonl`（`hook on` / `hook off` / `hook log`）。
+  **系统注入的机器消息**（`<task-notification>` 等）默认不显示——`hook log` 只列真实提示词，
+  `--system` 一并显示，`hook clean` 物理剔除（写前留快照可回滚）
 - **`hook-skill` Skill 追踪**：PostToolUse（matcher Skill），把 skill 调用记进
   `~/.nx-rp/skills/<cwd哈希>.jsonl`，健康分 = 使用量 + 新鲜度（`hook skill-on` / `hook skill-off` / `hook skills`）
 
@@ -33,7 +35,8 @@ description: nx-rp（npx-repo）—— 给当前项目管理外部上下文信�
 ```
 nx-rp hook on / off          # 提示词日志开关（幂等；写前自动留快照）
 nx-rp hook skill-on / skill-off  # Skill 追踪开关
-nx-rp hook log               # 提示词记录（--all 跨目录，--limit N）
+nx-rp hook log               # 提示词记录（--all 跨目录，--limit N；--system 连机器消息一起看）
+nx-rp hook clean             # 剔除日志里的系统注入记录（--all 全部目录，--dry-run 只统计）
 nx-rp hook skills            # Skill 使用统计与健康分（--all 跨目录）
 nx-rp hook status / skill-status  # 各自的开关状态
 ```

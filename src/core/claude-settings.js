@@ -17,9 +17,12 @@ import { CLAUDE_SETTINGS_PATH } from './paths.js';
 // 快照落点可指定（snapshotDir）：loop 模块写的是**项目级**配置，快照若落在
 // 项目 .claude/ 里会污染仓库，所以它传 ~/.nx-rp/snapshots/。缺省＝与目标同目录
 // （用户级配置的历史行为，另两个 hook 模块依赖）。
+//
+// 导出为 snapshotFile：hook-prompt 的「清理系统注入记录」也要「写前留快照」，
+// 语义完全一样（复制原文件、留可回滚副本），不该各写一份。
 const SNAPSHOT_KEEP = 5;
 
-async function snapshotSettings(targetPath = CLAUDE_SETTINGS_PATH, snapshotDir = null) {
+export async function snapshotFile(targetPath, snapshotDir = null) {
   let raw;
   try {
     raw = await fsp.readFile(targetPath, 'utf8');
@@ -152,7 +155,7 @@ export async function toggleSettings(mutate, { dryRun = false, settingsPath, sna
   const changed = mutate(next);
   if (dryRun) return { changed, written: false, snapshot: null };
   if (!changed) return { changed: false, written: false, snapshot: null };
-  const snapshot = await snapshotSettings(target, snapshotDir || null);
+  const snapshot = await snapshotFile(target, snapshotDir || null);
   await writeSettings(next, target);
   return { changed: true, written: true, snapshot };
 }

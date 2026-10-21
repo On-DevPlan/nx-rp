@@ -23,6 +23,7 @@ test('smoke: registry 装载自检通过、三端命令表可生成', async () =
   // 两个 hook 模块平级：提示词日志 + Skill 追踪，各自独立 tab 与开关
   for (const id of [
     'hook-prompt.capture', 'hook-prompt.on', 'hook-prompt.off', 'hook-prompt.status', 'hook-prompt.log',
+    'hook-prompt.clean',
     'hook-skill.track', 'hook-skill.slash', 'hook-skill.on', 'hook-skill.off', 'hook-skill.status', 'hook-skill.stats',
     'loop.stop', 'loop.start', 'loop.on', 'loop.off', 'loop.status', 'loop.cancel', 'loop.log',
     'system.recents', 'system.recents.touch', 'system.recents.remove',
@@ -31,7 +32,7 @@ test('smoke: registry 装载自检通过、三端命令表可生成', async () =
   }
   // 面板操作必须有 HTTP 可达的同源路由（capture/track/slash/loop.stop 是 hook 协议专属，cli-only）
   const httpById = new Map(ACTIONS.map((a) => [a.id, a.http]));
-  for (const id of ['hook-prompt.on', 'hook-prompt.off', 'hook-prompt.status', 'hook-prompt.log',
+  for (const id of ['hook-prompt.on', 'hook-prompt.off', 'hook-prompt.status', 'hook-prompt.log', 'hook-prompt.clean',
     'hook-skill.on', 'hook-skill.off', 'hook-skill.status', 'hook-skill.stats',
     'loop.start', 'loop.on', 'loop.off', 'loop.status', 'loop.cancel', 'loop.log']) {
     assert.ok(Array.isArray(httpById.get(id)), `${id} 缺 HTTP 路由，面板无法调用`);

@@ -52,7 +52,8 @@ nx-rp chart archify list     已登记的 archify 图表（面板「图表」模
 nx-rp chart archify add      把 archify 产物 HTML 拷入 scope 存储并登记
 nx-rp chart archify discover / remove / view    发现产物 / 移除登记 / 查看路径
 nx-rp hook on                启用提示词日志 hook（写 ~/.claude/settings.json）
-nx-rp hook log               看当前目录的提示词记录（--all 跨目录）
+nx-rp hook log               看当前目录的提示词记录（--all 跨目录，--system 连机器消息一起看）
+nx-rp hook clean             剔除日志里的系统注入记录（--all 全部目录，--dry-run 只统计）
 nx-rp hook off               停用（只摘自己的 entry，其余 hooks 不动）
 nx-rp hook skill-on / skills 启用 Skill 追踪 / 看 skill 使用统计与健康分
 nx-rp loop on                在当前项目启用循环 hook（写 .claude/settings.local.json，

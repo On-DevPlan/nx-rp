@@ -60,7 +60,18 @@ async function readBody(req) {
     chunks.push(c);
   }
   if (!chunks.length) return {};
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  const text = Buffer.concat(chunks).toString('utf8');
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    // 解析失败**不许**静默变成 {} ——那等于「请求体没带」，
+    // 对清理/删除这类动作就是「按默认值动手」（实测：cwd 与 dryRun 一起丢，
+    // 结果清错了范围还真的删了）。宁可 400 报错，也不替调用方猜。
+    const err = new Error('请求体不是合法 JSON');
+    err.code = 'INVALID_INPUT';
+    throw err;
+  }
 }
 
 // 跨站防护。服务虽然只绑 127.0.0.1，但用户浏览器里的任意页面都能向它发起请求——
@@ -130,7 +141,8 @@ async function dispatch(req, res, url) {
         raw.body = req;
         raw.headers = req.headers || {};
       } else {
-        Object.assign(raw, await readBody(req).catch(() => ({})));
+        // 请求体坏了就报错（readBody 抛 INVALID_INPUT）——不许吞成 {} 后按默认值动手
+        Object.assign(raw, await readBody(req));
       }
 
       const ctx = applySpec(action, raw);

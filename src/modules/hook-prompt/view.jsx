@@ -9,9 +9,14 @@
 //
 // 记录与分组是本视图自己的数据（参数随 activeScope 变）——不走 afterRefresh，
 // 独立拉取；hook 状态的加载失败由共享错误卡负责，这里的失败只红在记录卡上。
+//
+// **系统注入的记录默认不显示**：`<task-notification>`（后台任务完成）之类是
+// 机器消息，不是用户意图，混在列表里只会灌水（实测占比 22%）。头部给出
+// 「已隐藏 N 条」并可点开——想看就看得到，但不占默认视线；「清理」按钮把它们
+// 从 JSONL 里物理剔除（写前留快照，可回滚）。
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../../web/frontend/api/client.js';
-import { Copyable, Modal } from '../../web/frontend/components/ui.jsx';
+import { Copyable, Modal, useDialog, useGuard, useToast } from '../../web/frontend/components/ui.jsx';
 import { CliHints } from '../../web/frontend/components/CliHints.jsx';
 import { useStore } from '../../web/frontend/store.jsx';
 import ManualAddCard from '../../web/frontend/components/ManualAddCard.jsx';
@@ -27,6 +32,14 @@ export default function HookPromptView() {
   const [cwd, setCwd] = useState(null);
   const [logsError, setLogsError] = useState(null);
   const [viewing, setViewing] = useState(null);
+  // 系统注入记录：默认不显示；showSystem=true 时一并列出
+  const [showSystem, setShowSystem] = useState(false);
+  // 范围内系统注入的**总条数**（与是否显示无关）——头部据此给出提示与清理入口
+  const [systemCount, setSystemCount] = useState(0);
+  const [cleaning, setCleaning] = useState(false);
+  const { dialog, node: dialogNode } = useDialog();
+  const toast = useToast();
+  const guard = useGuard();
 
   // 切换 scope 时视图会重挂载，但 cwd 是组件内 state——必须跟着复位，
   // 否则会停在上一个 scope 的锁定目录上（用户切了项目却还在看旧项目）。
@@ -69,17 +82,45 @@ export default function HookPromptView() {
       // 私传 shape=with-groups 会被丢掉（这正是组列表曾经恒为空的原因）。
       qs.set('all', 'true');
       qs.set('groups', '1');
+      if (showSystem) qs.set('system', '1');
       if (activeScope) qs.set('cwd', activeScope);
       const res = await api('/api/hook-prompt/log?' + qs.toString());
       setLogs(res && Array.isArray(res.records) ? res.records : []);
       setGroups(res && Array.isArray(res.groups) ? res.groups : []);
+      setSystemCount(Number(res?.systemCount) || 0);
     } catch (e) {
       // 失败要如实呈现——不能让「请求失败」伪装成「暂无记录」
       setLogsError(e.message || '加载失败');
     }
-  }, [boot, activeScope]);
+  }, [boot, activeScope, showSystem]);
 
   useEffect(() => { loadLogs(); }, [loadLogs]);
+
+  // 清理：把系统注入的记录从 JSONL 里物理剔除。范围 = 当前视图锁定的目录
+  // （没锁定就是当前 scope）。写前留快照，可从 ~/.nx-rp/snapshots/ 回滚。
+  const clean = useCallback(() => guard(async () => {
+    if (cleaning) return;
+    setCleaning(true);
+    try {
+      const target = activeScope || '';
+      const ok = await dialog({
+        danger: true,
+        okText: '清理',
+        title: '清理系统注入记录？',
+        message:
+          `将把 ${target || '当前目录'} 里的系统注入记录（<task-notification> 等机器消息）`
+          + '从 JSONL 日志中物理删除；真实提示词一条不动。\n'
+          + '删除前会自动在 ~/.nx-rp/snapshots/ 留快照，可回滚。\n'
+          + '要清全部目录请用命令行：nx-rp hook clean --all',
+      });
+      if (!ok) return;
+      const r = await api('/api/hook-prompt/clean', { method: 'POST', body: { cwd: target } });
+      toast(r && r.removed ? `已清理 ${r.removed} 条系统注入记录` : '没有可清理的系统注入记录');
+      await loadLogs();
+    } finally {
+      setCleaning(false);
+    }
+  }), [guard, dialog, toast, loadLogs, activeScope, cleaning]);
 
   const dom = useHookDomain({
     statusUrl: '/api/hook-prompt/status',
@@ -103,7 +144,21 @@ export default function HookPromptView() {
       <div className="card">
         <div className="colhead">
           <span>提示词记录</span>
-          <span className="muted">{logs ? `${logs.length} 条` : (logsError ? '加载失败' : '加载中…')}</span>
+          <span className="muted">
+            {logs ? `${logs.length} 条` : (logsError ? '加载失败' : '加载中…')}
+            {systemCount > 0 ? (
+              <>
+                {' · '}
+                <span
+                  style={{ cursor: 'pointer', textDecoration: 'underline dotted' }}
+                  onClick={() => setShowSystem((v) => !v)}
+                  title="系统注入的机器消息（<task-notification> 等），默认不显示。点击切换是否列出。"
+                >
+                  {showSystem ? `含 ${systemCount} 条系统注入（点击隐藏）` : `已隐藏 ${systemCount} 条系统注入（点击显示）`}
+                </span>
+              </>
+            ) : null}
+          </span>
         </div>
 
         <div className="toolbar" style={{ padding: '8px 12px', gap: 6 }}>
@@ -129,14 +184,29 @@ export default function HookPromptView() {
               ↺ 跟随当前目录
             </button>
           ) : null}
+          {systemCount > 0 ? (
+            <button
+              className="btn small ghost"
+              onClick={clean}
+              disabled={cleaning}
+              title="把系统注入的记录从 JSONL 日志里物理删除（写前留快照，可回滚）"
+            >
+              {cleaning ? '清理中…' : '清理系统注入记录'}
+            </button>
+          ) : null}
           {logsError ? (
             <button className="btn small ghost" onClick={loadLogs}>重试</button>
           ) : null}
         </div>
 
         {!logs ? <div className="empty">{logsError ? '无法加载' : '加载中…'}</div>
-          : logs.length === 0 ? <div className="empty">（该目录暂无记录——在启用 hook 的会话里发一条提示词后再来）</div>
-          : logs.map((r, i) => (
+          : logs.length === 0 ? (
+            <div className="empty">
+              {systemCount > 0
+                ? `（该范围只有 ${systemCount} 条系统注入记录，没有真实提示词——点「清理系统注入记录」可清掉）`
+                : '（该目录暂无记录——在启用 hook 的会话里发一条提示词后再来）'}
+            </div>
+          ) : logs.map((r, i) => (
             <div key={r.ts + i} className="row">
               <div className="name" style={{ width: 140, flexShrink: 0 }}>{fmt(r.ts)}</div>
               <div className="desc">{oneLine(r.prompt)}</div>
@@ -183,6 +253,7 @@ export default function HookPromptView() {
         </Modal>
       )}
       {dom.dialogNode}
+      {dialogNode}
       <div style={{ marginTop: 12 }}>
         <CliHints module="hook-prompt" />
       </div>
