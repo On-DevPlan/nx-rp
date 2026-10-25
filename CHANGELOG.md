@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.1 / 2026-10-25
+
+### Changed
+
+- 新增 `docs/prompt-style-analysis.md`：提示词风格与产品打磨要求分析。
+
 ## 0.12.0 / 2026-10-21
 
 ### Added
