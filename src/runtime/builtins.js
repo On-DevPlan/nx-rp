@@ -290,6 +290,7 @@ function parseSkillArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--force') { flags.force = true; continue; }
+    if (a === '--all') { flags.all = true; continue; }
 
     // --name=value 形态
     const eq = a.indexOf('=');
@@ -344,10 +345,20 @@ async function runInstall(argv) {
   if (flags.group && nameArgs.length > 0) {
     throw _invalidInput(`位置参数「${nameArgs[0]}」与 --group=${flags.group} 都给了（二者等价，二选一）`);
   }
+  // --all 第三种选法：与「点名」「整组」都互斥
+  if (flags.all && (flags.group || nameArgs.length > 0)) {
+    throw _invalidInput('--all 与位置参数 / --group 互斥，只能给一个');
+  }
 
   let skills;
   let group;
-  if (flags.group) {
+  let all = false;
+  if (flags.all) {
+    // 名单取自目录扫描而不是 groups.json：清单漏写的新 skill 也该被「全部」装上
+    skills = listAssetDirs();
+    if (!skills.length) throw _invalidInput('assets/ 下没有可分发的 skill（没有含 SKILL.md 的目录）');
+    all = true;
+  } else if (flags.group) {
     const r = resolveGroup(flags.group);
     skills = r.skills;
     group = r.group;
@@ -359,7 +370,8 @@ async function runInstall(argv) {
   for (const name of skills) results.push({ name, ...(await installOne(name, { to, force })) });
 
   if (results.length === 1) {
-    return group === undefined ? results[0] : { ...results[0], group };
+    if (group !== undefined) return { ...results[0], group };
+    return all ? { ...results[0], all: true } : results[0];
   }
   // 最重态：任一 conflict → conflict；否则全 skipped → ok/skipped；否则 ok
   const anyConflict = results.some((r) => r.status === 'conflict');
@@ -367,6 +379,7 @@ async function runInstall(argv) {
   return {
     status: anyConflict ? 'conflict' : 'ok',
     group,
+    ...(all ? { all: true } : {}),
     skills: results,
     ...(allSkipped ? { skipped: true } : {}),
   };
@@ -416,6 +429,10 @@ async function installOne(skillName, { to, force }) {
 //     给了 --group 时名字槽已被占用，位置参数**左移一位**（positional[1] 当 ref）。
 async function runGet(argv) {
   const { positional, flags } = parseSkillArgs(argv);
+  // --all 只对 install 有意义：get 一次只输出一份文档（多份拼一起会破坏三段结构）
+  if (flags.all) {
+    throw _invalidInput('skill get 不支持 --all（一次只输出一份文档）；装全部用 nx-rp skill install --all');
+  }
 
   let skillName;
   let group;
@@ -572,6 +589,7 @@ async function cmdSkill(rest) {
   throw _invalidInput(`用法: nx-rp skill <子命令>
 可用: nx-rp skill install [name]    [--to <dir>] [--force]
       nx-rp skill install --group=<g> [--to <dir>] [--force]
+      nx-rp skill install --all      [--to <dir>] [--force]   ← assets/ 下全部 skill
       nx-rp skill get [name] [ref]  [--to <dir>]
       nx-rp skill get --group=<g> [ref] [--to <dir>]
       nx-rp skill groups
@@ -646,7 +664,9 @@ export const BUILTINS = [
         // 多 skill 聚合（仅 --group 且展开出多个）：逐行列出。
         // 判别必须显式——单 skill 的退化结果里也可能带 skills 数组。
         if (Array.isArray(r.skills)) {
-          const head = `group ${r.group}（${r.skills.length} 个 skill${r.skipped ? '，均为最新' : ''}）`;
+          // 判别用显式字段（all 或 group），不嗅探长度——单 skill 的退化结果里也可能带 skills
+          const label = r.all ? '全部 skill' : `group ${r.group}`;
+          const head = `${label}（${r.skills.length} 个 skill${r.skipped ? '，均为最新' : ''}）`;
           const body = r.skills.map((s) => {
             if (s.status === 'ok' && s.skipped) return `  已是最新: ${s.path}（无差异）`;
             if (s.status === 'ok' && s.installed) return `  已安装: ${s.path}（${s.files} 文件）`;

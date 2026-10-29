@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.12.2 / 2026-10-29
+
+### Added
+
+- **`skill install --all`**：装 `assets/` 下**全部**可分发的 skill（当前 4 个：`nx-rp` +
+  `rp-archify` / `rp-loop` / `rp-wish`）。与 `--group` 的差别只在来源——`--group` 读清单，
+  `--all` 读目录（含 `SKILL.md` 的目录都算），所以「清单漏写一个新 skill」时它不会被漏装。
+  聚合语义沿用现有的「逐个装 + 取最重态」：部分冲突不阻塞其余，冲突项不写盘，
+  加 `--force` 才覆盖。
+
+### Fixed
+
+- **`skill get --all` 不再被静默忽略**：`--all` 与 `--group` 共用同一套参数解析（
+  `parseSkillArgs`），但 `get` 一次只能输出一份文档，多份拼一起会破坏
+  「prefix → 文档 → install 状态」的三段结构。现在明确报错并指向
+  `nx-rp skill install --all`，而不是悄悄装成默认的 `nx-rp`。
+
 ## 0.12.1 / 2026-10-25
 
 ### Changed
